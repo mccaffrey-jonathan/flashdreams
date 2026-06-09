@@ -616,14 +616,14 @@ class HyWorldPlayWanDiTNetwork(WanDiTNetwork):
         Mirrors :meth:`forward`'s patchify + time / action embedding + AdaLN
         modulation preamble, then loops over blocks calling
         :meth:`HyWorldPlayPRoPEBlock.prefill_memory_kv` so each block's
-        self-attention K/V land in its memory slot at the collapsed RoPE
-        positions ``[0, K * tokens_per_frame)``. Cross-attention, FFN, and
+        self-attention K/V land in its memory slot, RoPE-modulated at the
+        memory frames' true temporal positions. Cross-attention, FFN, and
         the head are unobservable in the cache and are skipped on this path.
 
         The caller is responsible for slicing the per-rollout history at
         ``HyWorldPlayCtrl.memory_frame_indices`` and for building
-        ``rope_freqs`` against the same collapsed positions (*not* the
-        standard chunk positions ``[i*len_t, (i+1)*len_t)``).
+        ``rope_freqs`` at those frames' true positions (their history
+        indices), which share the standard path's absolute coordinate frame.
 
         Args:
             x: Patchified memory latents with shape ``[..., L_mem, in_dim]``.
@@ -631,8 +631,8 @@ class HyWorldPlayWanDiTNetwork(WanDiTNetwork):
                 (vendor's ``stabilization_level``); applied to memory tokens
                 so the AdaLN modulation stays in the trained distribution.
             cache: Per-block cache; only the ``memory`` slots are written.
-            rope_freqs: RoPE frequencies remapped to the collapsed memory
-                positions ``[0, L_mem)``.
+            rope_freqs: RoPE frequencies at the memory frames' true temporal
+                positions (built by ``_build_memory_rope_freqs``).
             block_extra_kwargs: Optional extras forwarded to the per-block
                 prefill (unused; kept for symmetry with :meth:`forward`).
             action: Optional action labels for the memory frames.
@@ -1051,8 +1051,8 @@ class HyWorldPlayWan21Transformer(Wan21Transformer):
         """Drive the reconstituted-context KV prefill for the current chunk.
 
         Slices the clean-latent history at ``input.memory_frame_indices``,
-        builds collapsed-position RoPE freqs, slices ``viewmats`` / ``Ks`` /
-        ``action`` at the same indices, then dispatches into
+        builds RoPE freqs at those frames' true temporal positions, slices
+        ``viewmats`` / ``Ks`` / ``action`` at the same indices, then dispatches into
         :meth:`HyWorldPlayWanDiTNetwork.prefill_memory_kv_cache` for the
         conditional (and unconditional, when CFG is enabled) branch. Each
         block's memory cache is reset before being repopulated.
@@ -1128,12 +1128,20 @@ class HyWorldPlayWan21Transformer(Wan21Transformer):
             kind="action",
         )
 
-        # Build RoPE freqs for the collapsed memory positions ``[0, K)``
-        # on the temporal axis; the spatial axes use a fresh-zeroed
-        # grid inside ``_build_collapsed_rope_freqs``.
-        rope_freqs = self._build_collapsed_rope_freqs(
+        # Build RoPE freqs at each memory frame's TRUE temporal position --
+        # its index in the clean-latent history -- matching the absolute
+        # positions the main path assigns via ``shift_t`` (offset =
+        # ar_idx * len_t). The memory cache is wiped and re-prefilled every
+        # chunk, so the K/V are recomputed each chunk; the only thing that
+        # was wrong was the RoPE position. The previous ``arange(K)`` roped
+        # each selected frame at its buffer-slot index, so a frame that was
+        # re-selected into a different slot got a different position (and a
+        # phase jump) from one chunk to the next -- the inter-chunk jolt.
+        # Keying off the frame index instead keeps a frame's encoding stable
+        # regardless of slot.
+        rope_freqs = self._build_memory_rope_freqs(
             cache=cache,
-            t_positions=torch.arange(K, dtype=torch.float32, device=memory_x.device),
+            t_positions=selected_idx_t.to(torch.float32),
         )
 
         # Clean-context timestep applied to memory positions; matches
@@ -1280,7 +1288,7 @@ class HyWorldPlayWan21Transformer(Wan21Transformer):
             )
         return rollout.index_select(-3, selected)
 
-    def _build_collapsed_rope_freqs(
+    def _build_memory_rope_freqs(
         self,
         cache: HyWorldPlayWan21TransformerCache,
         t_positions: Tensor,
@@ -1290,8 +1298,9 @@ class HyWorldPlayWan21Transformer(Wan21Transformer):
         The base :class:`RotaryPositionEmbedding3D` only exposes
         ``shift_t(autoregressive_index)``, which produces freqs at
         chunk-aligned positions. We reach into the
-        ``_freq_components(seq_t)`` primitive to build freqs at the
-        prefill's collapsed memory positions ``[0, K)``.
+        ``_freq_components(seq_t)`` primitive to build freqs at the memory
+        frames' true temporal positions (their clean-latent-history
+        indices), so they share the main path's absolute coordinate frame.
 
         Raises:
             NotImplementedError: ``rope_adapter`` is not
