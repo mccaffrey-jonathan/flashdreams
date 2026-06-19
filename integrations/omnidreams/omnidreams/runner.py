@@ -356,17 +356,24 @@ class OmnidreamsRunner(Runner[OmnidreamsRunnerConfig, OmnidreamsPipeline]):
         hdmap_paths = self._resolve_paths(
             cfg.hdmap_video_paths, num_views, name="hdmap_video_paths"
         )
+        # Keep the full HDMap conditioning clip on the host and stream only the
+        # per-AR-step window to the GPU (in the loop below). Preloading the
+        # whole clip -- plus the stacked duplicate -- to VRAM scales with
+        # clip_length x resolution and needlessly caps rollout length /
+        # resolution: an 80s 720p clip costs ~25 GiB of device memory while
+        # only ``len_t`` frames are consumed per step.
+        host = torch.device("cpu")
         hdmap_videos: list[torch.Tensor] = [
             _load_video(
                 hdmap_paths[i],
                 pixel_height=cfg.pixel_height,
                 pixel_width=cfg.pixel_width,
-                device=device,
+                device=host,
                 dtype=dtype,
             )
             for i in range(num_views)
         ]
-        # [B=1, V, T, C, H, W]
+        # [B=1, V, T, C, H, W] on the host; windows are moved to ``device`` below.
         hdmap_videos_t = torch.stack(hdmap_videos, dim=0).unsqueeze(0)
         hdmap_num_frames = hdmap_videos_t.shape[2]
         if self.is_rank_zero:
@@ -395,7 +402,7 @@ class OmnidreamsRunner(Runner[OmnidreamsRunnerConfig, OmnidreamsPipeline]):
             video_chunk = self.pipeline.generate(
                 autoregressive_index=i,
                 cache=cache,
-                hdmap=hdmap_videos_t[:, :, start:end],
+                hdmap=hdmap_videos_t[:, :, start:end].to(device, non_blocking=True),
             )
             stats = self.pipeline.finalize(autoregressive_index=i, cache=cache)
             if stats is not None:
