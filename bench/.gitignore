@@ -1,0 +1,7 @@
+# Derived from NVIDIA's gated omni-dreams-samples dataset — do not commit data.
+assets/
+# Large allocator snapshots + per-run outputs.
+mem/
+runs/
+*.pickle
+*.mp4
