@@ -1,0 +1,10 @@
+# 5090 overlay: CPU text encoder + SageAttention-3 FP8 native attention.
+schema_version: 1
+model:
+  pipeline:
+    text_encoder:
+      run_on_cpu: true
+      embedding_cache_size: 8
+    diffusion_model:
+      transformer:
+        native_dit_attention_backend: sage3_fp8

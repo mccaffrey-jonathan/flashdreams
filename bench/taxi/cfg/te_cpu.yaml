@@ -1,0 +1,7 @@
+# 5090 overlay: run the 15 GiB Cosmos-Reason1 text encoder on the host CPU; cache restart prompts.
+schema_version: 1
+model:
+  pipeline:
+    text_encoder:
+      run_on_cpu: true
+      embedding_cache_size: 8

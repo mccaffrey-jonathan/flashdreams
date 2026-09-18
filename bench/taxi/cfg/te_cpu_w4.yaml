@@ -1,0 +1,10 @@
+# 5090 overlay: CPU text encoder + 4-chunk temporal window.
+schema_version: 1
+model:
+  pipeline:
+    text_encoder:
+      run_on_cpu: true
+      embedding_cache_size: 8
+    diffusion_model:
+      transformer:
+        window_size_t: 4
