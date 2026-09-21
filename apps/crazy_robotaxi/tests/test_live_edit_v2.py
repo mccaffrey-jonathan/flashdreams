@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,7 +38,10 @@ from crazy_robotaxi.live_edit.obstacle_events import (
 )
 from crazy_robotaxi.live_edit.obstacle_templates import load_obstacle_template_catalog
 from crazy_robotaxi.live_edit.runtime_v2 import LiveEditGameplay, LiveEditGameRules
-from crazy_robotaxi.live_edit.style_ability import StyleAbility
+from crazy_robotaxi.live_edit.style_ability import (
+    _MAP_EMBEDDING_CACHE_ENTRIES,
+    StyleAbility,
+)
 from crazy_robotaxi.live_edit.weather_ability import compose_swap_target
 from crazy_robotaxi.navigation import NavigationLane
 from ludus_renderer import SceneObject
@@ -626,3 +630,93 @@ def test_map_context_cli_enables_live_edit_runtime() -> None:
 
     assert config.map_context.enabled
     assert config.any_enabled
+
+
+class _HostTextEncoder:
+    """Stand-in for a Cosmos-Reason1 encoder that runs on the host."""
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.config = SimpleNamespace(run_on_cpu=True)
+        self.fails = fails
+        self.prompts: list[str] = []
+
+    def __call__(self, prompts: list[str]) -> Any:
+        import torch
+
+        self.prompts.extend(prompts)
+        if self.fails:
+            raise RuntimeError("encoder unavailable")
+        return torch.zeros((1, 2, 3))
+
+
+def _async_map_ability(
+    *, fails: bool = False
+) -> tuple[StyleAbility, _HostTextEncoder, list[Any]]:
+    ability, _, targets = _map_prompt_ability()
+    encoder = _HostTextEncoder(fails=fails)
+    ability._encoder_pipeline = SimpleNamespace(text_encoder=encoder)
+    return ability, encoder, targets
+
+
+def _settle(ability: StyleAbility) -> None:
+    for _ in range(500):
+        if not ability._encoding:
+            return
+        time.sleep(0.01)
+    raise AssertionError("the prompt encoder never finished")
+
+
+def test_map_prompt_swap_waits_for_the_host_encoder() -> None:
+    ability, encoder, targets = _async_map_ability()
+    ability._pending_map_suffix = "The taxi is driving forward."
+    prompt = "A sunny suburb. The taxi is driving forward."
+
+    ability.before_v2_chunk()
+
+    assert targets == []
+    assert ability._pending_map_suffix == "The taxi is driving forward."
+    _settle(ability)
+    assert encoder.prompts == [prompt]
+    assert ability._lookup_embeddings(prompt) is not None
+
+    ability.before_v2_chunk()
+
+    assert [target.prompt for target in targets] == [prompt]
+    assert ability._pending_map_suffix is None
+    assert ability._active_map_suffix == "The taxi is driving forward."
+
+
+def test_only_the_newest_wanted_prompt_is_encoded() -> None:
+    ability, encoder, _ = _async_map_ability()
+    ability._encoding = True  # pretend a worker is mid-encode
+
+    ability._encode_in_background("stale prompt")
+    ability._encode_in_background("newest prompt")
+
+    assert ability._wanted_prompt == "newest prompt"
+    assert encoder.prompts == []
+
+
+def test_an_unencodable_prompt_is_abandoned_instead_of_retried() -> None:
+    ability, encoder, targets = _async_map_ability(fails=True)
+    ability._pending_map_suffix = "The taxi is driving forward."
+
+    ability.before_v2_chunk()
+    _settle(ability)
+    ability.before_v2_chunk()
+
+    assert encoder.prompts == ["A sunny suburb. The taxi is driving forward."]
+    assert targets == []
+    assert ability._pending_map_suffix is None
+
+
+def test_map_embeddings_evict_the_least_recently_used() -> None:
+    ability, _, _ = _async_map_ability()
+
+    for index in range(_MAP_EMBEDDING_CACHE_ENTRIES + 1):
+        ability._store_map_embedding(f"prompt {index}", index)
+        ability._lookup_embeddings("prompt 0")
+
+    assert ability._lookup_embeddings("prompt 0") == 0
+    assert ability._lookup_embeddings("prompt 1") is None
+    assert len(ability._map_embeddings) == _MAP_EMBEDDING_CACHE_ENTRIES

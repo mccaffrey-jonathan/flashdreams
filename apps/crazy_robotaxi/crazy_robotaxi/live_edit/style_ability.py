@@ -33,7 +33,9 @@ Vanilla behavior is untouched until :func:`attach_style_ability` runs.
 from __future__ import annotations
 
 import os
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, cast
@@ -50,6 +52,23 @@ from crazy_robotaxi.live_edit.weather_ability import compose_prompt, compose_swa
 
 _NO_PENDING = object()
 """Sentinel distinguishing "no request" from "revert to base" (None)."""
+
+_MAP_EMBEDDING_CACHE_ENTRIES = 32
+"""Map-context prompt embeddings kept in host memory, most recent first.
+
+One ``full_concat`` embedding is about 98 MiB, so this holds roughly 3 GiB.
+"""
+
+
+def _host_encoder_pipeline(pipeline: Any) -> Any | None:
+    """Return ``pipeline`` when its text encoder runs on the host, else None.
+
+    A device encode is about 50 ms and fits inside a chunk boundary, so only a
+    host encode -- about 3 s -- is worth moving off the model thread.
+    """
+    text_encoder = getattr(pipeline, "text_encoder", None)
+    config = getattr(text_encoder, "config", None)
+    return pipeline if getattr(config, "run_on_cpu", False) else None
 
 
 class _V2PromptSession:
@@ -116,6 +135,12 @@ class StyleAbility:
         self._dispatch: Any | None = None
         self._corrector_states: set[str] = set()
         self._prompt_embeddings: dict[str, Any] = {}
+        self._map_embeddings: OrderedDict[str, Any] = OrderedDict()
+        self._embeddings_lock = threading.Lock()
+        self._encoder_pipeline: Any | None = None
+        self._wanted_prompt: str | None = None
+        self._encoding = False
+        self._unencodable: set[str] = set()
 
     def configure_map(self, game_map: Any) -> None:
         """Bind the selected resolved map before a rollout starts."""
@@ -272,6 +297,7 @@ class StyleAbility:
                 self._attach_corrector(pipeline, transformer)
         self._precompute_prompt_embeddings(pipeline)
         self._encode_prompt(pipeline, base_prompt)
+        self._encoder_pipeline = _host_encoder_pipeline(pipeline)
         self._session = _V2PromptSession(pipeline, cache)
         self.reset_v2(cache)
 
@@ -353,13 +379,85 @@ class StyleAbility:
         """Cache the ``[B=1, V=1, L, D]`` embeddings of one prompt."""
         if prompt in self._prompt_embeddings:
             return
+        if getattr(pipeline, "text_encoder", None) is None:
+            return
+        embeddings = self._encode(pipeline, prompt)
+        with self._embeddings_lock:
+            self._prompt_embeddings[prompt] = embeddings
+
+    def _encode(self, pipeline: Any, prompt: str) -> Any:
+        """Return one prompt's ``[B=1, V=1, L, D]`` embeddings, host-resident.
+
+        Kept on the host because ``replace_text_from_embeddings`` moves them to
+        the pipeline device anyway: one entry is about 98 MiB, which is VRAM
+        this game does not have to spare, against a 7 ms copy per swap.
+        """
         import torch
 
-        text_encoder = getattr(pipeline, "text_encoder", None)
-        if text_encoder is None:
-            return
         with torch.no_grad():
-            self._prompt_embeddings[prompt] = text_encoder([prompt]).unsqueeze(0)
+            return pipeline.text_encoder([prompt]).unsqueeze(0).to("cpu")
+
+    def _lookup_embeddings(self, prompt: str) -> Any | None:
+        """Return cached embeddings for ``prompt``, or ``None`` when unseen."""
+        with self._embeddings_lock:
+            cached = self._prompt_embeddings.get(prompt)
+            if cached is not None:
+                return cached
+            cached = self._map_embeddings.get(prompt)
+            if cached is not None:
+                self._map_embeddings.move_to_end(prompt)
+            return cached
+
+    def _store_map_embedding(self, prompt: str, embeddings: Any) -> None:
+        """Keep one map-context embedding, evicting the least recent.
+
+        Separate from ``_prompt_embeddings`` so map states cannot evict the
+        base, skin, and weather prompts: losing one of those would put a host
+        encode back on the model thread, which is the stall being avoided.
+        """
+        with self._embeddings_lock:
+            self._map_embeddings[prompt] = embeddings
+            while len(self._map_embeddings) > _MAP_EMBEDDING_CACHE_ENTRIES:
+                self._map_embeddings.popitem(last=False)
+
+    def _encode_in_background(self, prompt: str) -> None:
+        """Ask the worker for ``prompt``, replacing whatever it wanted before.
+
+        Only the newest request is worth encoding: the ones before it describe
+        road the taxi has already left. The thread is deliberately not a
+        daemon, so a run that ends mid-encode waits for it instead of aborting
+        inside torch, and it exits as soon as there is nothing left to encode,
+        so a rollout that is torn down leaves nothing running.
+        """
+        with self._embeddings_lock:
+            self._wanted_prompt = prompt
+            if self._encoding:
+                return
+            self._encoding = True
+        threading.Thread(
+            target=self._encode_wanted_prompts,
+            name="live-edit-prompt-encoder",
+        ).start()
+
+    def _encode_wanted_prompts(self) -> None:
+        """Encode the newest wanted prompt until there is nothing left."""
+        while True:
+            with self._embeddings_lock:
+                prompt = self._wanted_prompt
+                self._wanted_prompt = None
+                if prompt is None or prompt in self._map_embeddings:
+                    self._encoding = False
+                    return
+            try:
+                assert self._encoder_pipeline is not None
+                embeddings = self._encode(self._encoder_pipeline, prompt)
+            except Exception:
+                # Retrying would pin map context on one bad prompt forever.
+                logger.exception(f"[map-context] could not encode {prompt!r}")
+                with self._embeddings_lock:
+                    self._unencodable.add(prompt)
+                continue
+            self._store_map_embedding(prompt, embeddings)
 
     def request_cycle(self) -> None:
         """Queue base -> skin[0] -> skin[1] -> ... -> base for the next chunk.
@@ -782,6 +880,18 @@ class StyleAbility:
             guidance_chunks=0,
             use_lora=False,
         )
+        if (
+            self._encoder_pipeline is not None
+            and self._lookup_embeddings(target.prompt) is None
+        ):
+            if target.prompt in self._unencodable:
+                return
+            # A host encode is ~3 s, ten chunks of dropped video on this
+            # thread. Hold the suffix and land it -- or a newer one -- once
+            # the worker has it cached; the suffix is advisory either way.
+            self._pending_map_suffix = suffix
+            self._encode_in_background(target.prompt)
+            return
         self._replace_text(session, target)
         self._active_map_suffix = suffix
         logger.info(f"[map-context] prompt state -> {suffix}")
@@ -918,12 +1028,10 @@ class StyleAbility:
         if bypass_lora:
             edit_lora = transformer._text_edit_lora
             transformer.set_text_edit_lora(None)
-        embeddings = self._prompt_embeddings.get(target.prompt)
+        embeddings = self._lookup_embeddings(target.prompt)
         if embeddings is None:
-            # ponytail: raw GPU embeddings grow with unique combined prompts;
-            # switch to compact projected CPU contexts if large maps make it material.
             self._encode_prompt(session.pipeline, target.prompt)
-            embeddings = self._prompt_embeddings.get(target.prompt)
+            embeddings = self._lookup_embeddings(target.prompt)
         replace_from_embeddings = getattr(
             session.pipeline, "replace_text_from_embeddings", None
         )
