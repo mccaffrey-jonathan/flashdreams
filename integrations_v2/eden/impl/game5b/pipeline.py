@@ -141,7 +141,9 @@ class Game5BInferencePipeline(WanInferencePipeline):
         if text_embeddings is None:
             self._ensure_oneshot_encoders_loaded()
             assert self.text_encoder is not None, "text_encoder is not set"
-            text_embeddings = self.text_encoder(text)
+            # The encoder may live on the host (``run_on_cpu`` style setups);
+            # the cross-attention cache is built on the DiT's device.
+            text_embeddings = self.text_encoder(text).to(device=self.device)
             self._text_cache = (tuple(text), text_embeddings)
             if release_oneshot_encoders:
                 self.release_oneshot_encoders()

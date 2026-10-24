@@ -469,7 +469,9 @@ def _bare_pipeline(encoder_factory):
 
     pipeline = Game5BInferencePipeline.__new__(_Pipeline)
     torch.nn.Module.__init__(pipeline)
-    pipeline.diffusion_model = SimpleNamespace(config=SimpleNamespace(max_latent_frames=None))
+    pipeline.diffusion_model = SimpleNamespace(
+        config=SimpleNamespace(max_latent_frames=None), device=torch.device("cpu")
+    )
     pipeline._text_cache = None
     pipeline._negative_text_cache = None
     pipeline.text_encoder = None
