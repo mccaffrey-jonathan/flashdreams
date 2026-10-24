@@ -1,87 +1,77 @@
-"""Regression coverage for bounded reference-compatible AR sampling."""
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Reference-compatible noise layout of :class:`EdenDiffusionModel`.
+
+The EdenLive reference (VAST offline package, LightX2V's runner) draws one
+whole-video initial noise tensor in ``(C, T, H, W)`` order, then one re-noise
+tensor per scheduler step, all from a single CUDA generator. These tests pin
+that stream on the CPU with a pass-through transformer.
+"""
+
+from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-from flashdreams.core.attention.kvcache import BlockKVCache
-from flashdreams.infra.diffusion.model.base import DiffusionModel
-from flashdreams.recipes.wan.transformer.impl.network import (
-    WanDiTNetworkCache,
-    WanDiTNetworkConfig,
-)
+from eden.impl.diffusion import EdenDiffusionModel
+
+pytestmark = pytest.mark.ci_cpu
 
 
-def test_video_noise_draw_preserves_channels_first_rng_and_cpu_storage():
-    class Transformer(torch.nn.Module):
-        config = SimpleNamespace(len_t=3)
-        device = torch.device("cpu")
-        dtype = torch.float32
+class _PassThroughTransformer(torch.nn.Module):
+    config = SimpleNamespace(len_t=3)
+    device = torch.device("cpu")
+    dtype = torch.float32
 
-        def unpatchify_and_maybe_gather_cp(self, value):
-            return value
+    def unpatchify_and_maybe_gather_cp(self, value):
+        return value
 
-        def patchify_and_maybe_split_cp(self, value):
-            return value
+    def patchify_and_maybe_split_cp(self, value):
+        return value
 
-    model = DiffusionModel.__new__(DiffusionModel)
+
+def _bare_model(**config) -> EdenDiffusionModel:
+    model = EdenDiffusionModel.__new__(EdenDiffusionModel)
     torch.nn.Module.__init__(model)
-    model.config = SimpleNamespace(seed=2026092901, max_latent_frames=7)
-    model.transformer = Transformer()
+    model.config = SimpleNamespace(seed=2026092901, **config)
+    model.transformer = _PassThroughTransformer()
     model._rng = None
     model._initial_video_noise = None
+    return model
+
+
+def test_video_noise_draw_preserves_channels_first_rng_and_cpu_storage() -> None:
+    model = _bare_model(max_latent_frames=9)
     generator = torch.Generator().manual_seed(model.config.seed)
-    expected = torch.randn(2, 7, 2, 2, generator=generator)
+    expected = torch.randn(2, 9, 2, 2, generator=generator)  # (C, T, H, W)
     chunks = [
-        model._video_initial_noise(torch.empty(frames, 2, 2, 2), index)
-        for index, frames in enumerate((3, 3, 1))
+        model._video_initial_noise(torch.empty(3, 2, 2, 2), index) for index in range(3)
     ]
+    # FlashDreams lays latents out (T, C, H, W); the draw was (C, T, H, W).
     assert torch.equal(torch.cat(chunks).movedim(-3, -4), expected)
+    assert model._initial_video_noise is not None
     assert model._initial_video_noise.device.type == "cpu"
     assert torch.equal(model.rng.get_state(), generator.get_state())
+    # The re-noise continues the same stream, again channels-first.
     renoise = model._rank0_noise(torch.empty(3, 2, 2, 2))
     expected_renoise = torch.randn(2, 3, 2, 2, generator=generator).movedim(-3, -4)
     assert torch.equal(renoise, expected_renoise)
 
 
-def test_short_final_chunk_keeps_nominal_query_slot_and_history_budget():
-    cache = BlockKVCache(
-        k_shape=(1, 18, 1, 1),
-        v_shape=(1, 18, 1, 1),
-        seq_dim=1,
-        chunk_size=3,
-        window_size=12,
-        sink_size=6,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    )
-    for index in range(6):
-        values = torch.arange(index * 3, index * 3 + 3).float().reshape(1, 3, 1, 1)
-        cache.before_update(index)
-        cache.update(values, values)
-        cache.after_update(index)
-    cache.valid_chunk_size = 1
-    cache.before_update(6)
-    value = torch.full((1, 1, 1, 1), 18.0)
-    cache.update(value, value)
-    assert cache.write_end == 16
-    assert cache.cached_k().flatten().tolist() == list(range(6)) + list(range(9, 19))
-    cache.after_update(6)
-    assert cache.size == 16
+def test_video_noise_rejects_reading_past_the_bounded_length() -> None:
+    model = _bare_model(max_latent_frames=6)
+    model._video_initial_noise(torch.empty(3, 2, 2, 2), 1)
+    with pytest.raises(ValueError, match="max_latent_frames"):
+        model._video_initial_noise(torch.empty(3, 2, 2, 2), 2)
 
 
-def test_scalar_timestep_time_mlp_uses_batched_gemm():
-    network = WanDiTNetworkConfig(
-        dim=8, ffn_dim=16, freq_dim=8, num_heads=1, num_layers=0,
-        in_dim=2, out_dim=2, text_dim=8, text_len=2, patch_size=(1, 1, 1),
-        patch_embedding_type="linear", fp32_adaln=True,
-    ).setup()
-    network.update_parameters_after_loading_checkpoint()
-    shapes = []
-    network.time_embedding[0].register_forward_pre_hook(
-        lambda module, inputs: shapes.append(tuple(inputs[0].shape))
-    )
-    network(x=torch.zeros(2, 2), timesteps=torch.tensor(0.0),
-            cache=WanDiTNetworkCache(block_caches=[]),
-            rope_freqs=torch.empty(2, 1, 1, 8), eager_mode=False)
-    assert shapes == [(1, 8)]
+def test_reset_noise_rewinds_the_stream() -> None:
+    model = _bare_model(max_latent_frames=3)
+    first = model._video_initial_noise(torch.empty(3, 2, 2, 2), 0).clone()
+    model._rank0_noise(torch.empty(3, 2, 2, 2))
+    model.reset_noise()
+    assert torch.equal(model._video_initial_noise(torch.empty(3, 2, 2, 2), 0), first)

@@ -193,22 +193,23 @@ def test_taehv_variant_swaps_only_the_decoder() -> None:
     end up at 16 the latent grid would be sized from ``704 / 8 = 88`` instead of
     44, and the whole patch grid would misalign with no error attached.
     """
-    from flashdreams.recipes.taehv import (
-        TeahvVAEWan22Decoder,
-        TeahvVAEWan22DecoderConfig,
-    )
     from flashdreams.recipes.wan.autoencoder.vae import WanVAE
+
+    from eden.impl.taehv_wan22 import (
+        TaehvVAEWan22Decoder,
+        TaehvVAEWan22DecoderConfig,
+    )
 
     base = PIPELINE_GAME2V_EDEN_WORLD_V2_5B
     variant = PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV
-    assert isinstance(variant.decoder, TeahvVAEWan22DecoderConfig)
+    assert isinstance(variant.decoder, TaehvVAEWan22DecoderConfig)
     assert variant.name == "game2v-eden-world-v2-5b-taehv"
     # Only the decoder moves: the encoder stays the real VAE, because the DiT's
     # stamped condition latent has to live in the space it was trained on.
     assert variant.encoder == base.encoder
     assert variant.diffusion_model == base.diffusion_model
-    assert TeahvVAEWan22Decoder.TEMPORAL_COMPRESSION_RATIO == 4
-    assert TeahvVAEWan22Decoder.SPATIAL_COMPRESSION_RATIO == 16
+    assert TaehvVAEWan22Decoder.TEMPORAL_COMPRESSION_RATIO == 4
+    assert TaehvVAEWan22Decoder.SPATIAL_COMPRESSION_RATIO == 16
     # The Wan 2.2 5B VAE it stands in for: 8x encoder body * 2x patchify.
     assert WanVAE.SPATIAL_COMPRESSION_RATIO * base.decoder.patch_size == 16
     assert WanVAE.TEMPORAL_COMPRESSION_RATIO == 4
@@ -221,39 +222,39 @@ def test_taehv_variant_reads_the_wan22_tiny_weights() -> None:
     latents, so the checkpoint and the ``wan22`` architecture branch have to be
     selected together.
     """
-    from flashdreams.recipes.taehv import (
-        AVAILABLE_TAEHV_CHECKPOINT_PATHS,
-        TeahvVAEWan22Decoder,
-        TeahvVAEWan22DecoderConfig,
-    )
+    from eden.config import GAME2V_5B_SPEC
+    from eden.impl.pipeline_yaml import resolve_path
+    from eden.impl.taehv_wan22 import TaehvVAEWan22DecoderConfig
 
     config = PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV.decoder
-    assert isinstance(config, TeahvVAEWan22DecoderConfig)
-    # The variant reads the path the pipeline YAML names, which is the same
-    # ``lighttaew2_2`` checkpoint the registry points at.
-    assert config.checkpoint_path == AVAILABLE_TAEHV_CHECKPOINT_PATHS["lighttae_wan22"]
-    assert config.checkpoint_path.endswith("lighttaew2_2.pth")
-    assert TeahvVAEWan22Decoder.MODEL_TYPE == "wan22"
+    assert isinstance(config, TaehvVAEWan22DecoderConfig)
+    # The variant reads the path the pipeline YAML names.
+    assert config.checkpoint_path == resolve_path(
+        GAME2V_5B_SPEC, GAME2V_5B_SPEC["taehv"]["decoder"]
+    )
+    assert config.checkpoint_path.endswith("decoder-5b/lighttaew2_2.pth")
 
 
 def test_taehv_variant_denormalizes_with_the_wan22_vae_statistics() -> None:
     """The tiny decoder reads raw latents; the pipeline's are normalized.
 
-    ``TeahvVAEDecoder.forward`` undoes the pipeline's normalization with these
+    ``TaehvVAEDecoder.forward`` undoes the pipeline's normalization with these
     constants, so they have to be the same 48 values the Wan 2.2 VAE decoder
     would use. The 14B's 16-channel table is both the wrong length and the wrong
     distribution.
     """
-    from flashdreams.recipes.taehv import TeahvVAEDecoder, TeahvVAEWan22Decoder
+    from flashdreams.recipes.taehv import TaehvVAEDecoder
     from flashdreams.recipes.wan.autoencoder.vae import (
         _WAN22_TI2V_5B_LATENT_MEAN,
         _WAN22_TI2V_5B_LATENT_STD,
     )
 
-    assert TeahvVAEWan22Decoder._LIGHTTAE_MEAN == _WAN22_TI2V_5B_LATENT_MEAN
-    assert TeahvVAEWan22Decoder._LIGHTTAE_STD == _WAN22_TI2V_5B_LATENT_STD
-    assert len(TeahvVAEWan22Decoder._LIGHTTAE_MEAN) == GAME5B_LATENT_CHANNELS
-    assert len(TeahvVAEDecoder._LIGHTTAE_MEAN) == 16
+    from eden.impl.taehv_wan22 import TaehvVAEWan22Decoder
+
+    assert TaehvVAEWan22Decoder._LIGHTTAE_MEAN == tuple(_WAN22_TI2V_5B_LATENT_MEAN)
+    assert TaehvVAEWan22Decoder._LIGHTTAE_STD == tuple(_WAN22_TI2V_5B_LATENT_STD)
+    assert len(TaehvVAEWan22Decoder._LIGHTTAE_MEAN) == GAME5B_LATENT_CHANNELS
+    assert len(TaehvVAEDecoder._LIGHTTAE_MEAN) == 16
 
 
 def test_taehv_app_defaults_keep_the_5b_wiring() -> None:

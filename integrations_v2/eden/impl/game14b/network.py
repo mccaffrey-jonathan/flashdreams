@@ -30,6 +30,7 @@ from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetworkCache,
 )
 
+from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
 from eden.impl.numerics import EdenWanDiTNetwork
 
 # 16 noisy latent + 4 first-frame mask + 16 condition latent.
@@ -129,6 +130,10 @@ class Game14BDiTNetworkConfig(WanDiTNetwork14BConfig):
     in_dim: int = GAME14B_I2V_CHANNELS + GAME14B_CONTROL_DIM
     fp32_adaln: bool = False
     """Run AdaLN, LayerNorms and residual adds in fp32 (Diffusers precision)."""
+    linear_backend: LinearBackend = "torch"
+    """``"rowwise_fp8"`` quantizes the large block linears (see :mod:`eden.impl.acceleration`)."""
+    self_attention_backend: SelfAttentionBackend = "cudnn"
+    """``"sage_fp8"`` / ``"sage2"`` swap the self-attention kernel (single GPU)."""
     control_dim: int = GAME14B_CONTROL_DIM
     # Wan 2.1 I2V ships a CLIP vision branch (k_img / v_img / img_emb).
     cross_attn_enable_img: bool = True

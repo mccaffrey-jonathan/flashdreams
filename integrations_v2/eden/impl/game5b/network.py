@@ -39,6 +39,7 @@ from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetworkTI2V5BConfig,
 )
 
+from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
 from eden.impl.numerics import EdenWanDiTNetwork
 
 
@@ -113,6 +114,10 @@ class Game5BDiTNetworkConfig(WanDiTNetworkTI2V5BConfig):
     in_dim: int = GAME5B_LATENT_CHANNELS + GAME5B_CONTROL_DIM
     fp32_adaln: bool = False
     """Run AdaLN, LayerNorms and residual adds in fp32 (Diffusers precision)."""
+    linear_backend: LinearBackend = "torch"
+    """``"rowwise_fp8"`` quantizes the large block linears (see :mod:`eden.impl.acceleration`)."""
+    self_attention_backend: SelfAttentionBackend = "cudnn"
+    """``"sage_fp8"`` / ``"sage2"`` swap the self-attention kernel (single GPU)."""
     control_dim: int = GAME5B_CONTROL_DIM
     patch_embedding_type: str = "conv3d"
     # 24 heads do not shard evenly across 8 ranks, so token sharding rather

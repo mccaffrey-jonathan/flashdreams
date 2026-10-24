@@ -211,21 +211,21 @@ def test_restart_reuses_the_one_shot_encodings() -> None:
 
 def test_taehv_variant_swaps_only_the_decoder() -> None:
     """LightTAE matches the Wan VAE's compression, so pacing is unchanged."""
-    from flashdreams.recipes.taehv import TeahvVAEDecoder, TeahvVAEDecoderConfig
+    from flashdreams.recipes.taehv import TaehvVAEDecoder, TaehvVAEDecoderConfig
     from flashdreams.recipes.wan.autoencoder.vae import WanVAE
 
     base = PIPELINE_GAME2V_EDEN_WORLD_V2_14B
     variant = PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV
-    assert isinstance(variant.decoder, TeahvVAEDecoderConfig)
+    assert isinstance(variant.decoder, TaehvVAEDecoderConfig)
     # The ratios live on the decoder implementations, and they must agree or
     # the renderer's capture pacing would drift from the decoded frames.
     assert (
-        TeahvVAEDecoder.TEMPORAL_COMPRESSION_RATIO
+        TaehvVAEDecoder.TEMPORAL_COMPRESSION_RATIO
         == WanVAE.TEMPORAL_COMPRESSION_RATIO
         == 4
     )
     assert (
-        TeahvVAEDecoder.SPATIAL_COMPRESSION_RATIO
+        TaehvVAEDecoder.SPATIAL_COMPRESSION_RATIO
         == WanVAE.SPATIAL_COMPRESSION_RATIO
         == 8
     )
@@ -244,7 +244,9 @@ def test_negative_prompt_is_the_14b_string() -> None:
     from flashdreams.recipes.wan.transformer.constants import NEGATIVE_PROMPT
 
     from eden.impl.game14b.pipeline import Game14BInferencePipeline
-    from eden.impl.pipeline import EDEN_WORLD_V2_NEGATIVE_PROMPT
+    # The camera model's v2 negative prompt (VAST eden.impl.pipeline, not
+    # ported: it belongs to the LingBot-derived cam2v presets).
+    EDEN_WORLD_V2_NEGATIVE_PROMPT = "画面突变，" + NEGATIVE_PROMPT
 
     negative = Game14BInferencePipeline._negative_prompt()
     assert negative == "镜头晃动，" + NEGATIVE_PROMPT

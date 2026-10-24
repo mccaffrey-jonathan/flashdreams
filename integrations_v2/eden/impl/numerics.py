@@ -29,6 +29,8 @@ from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetworkConfig,
 )
 
+from eden.impl.acceleration import replace_large_linears_with_fp8, replace_self_attention_ops
+
 
 def _layer_norm_fp32(norm: nn.Module, x: Tensor) -> Tensor:
     """Apply ``norm`` to ``x`` in fp32 (Diffusers ``FP32LayerNorm``).
@@ -108,15 +110,21 @@ class FP32AdaLNHead(Head):
 
 
 class EdenWanDiTNetwork(WanDiTNetwork):
-    """:class:`WanDiTNetwork` with an opt-in Diffusers-precision AdaLN.
+    """:class:`WanDiTNetwork` with opt-in precision and kernel switches.
 
-    Reads ``fp32_adaln`` from the config (default ``False``, which is the
-    stock network bit for bit).
+    Reads from the config (every default is the stock network bit for bit):
+
+    * ``fp32_adaln`` -- Diffusers-precision AdaLN (this module);
+    * ``linear_backend`` / ``self_attention_backend`` -- low-precision kernels
+      (:mod:`eden.impl.acceleration`).
     """
 
     def __init__(self, config: WanDiTNetworkConfig) -> None:
         super().__init__(config)
         self.fp32_adaln = bool(getattr(config, "fp32_adaln", False))
+        self.linear_backend = getattr(config, "linear_backend", "torch")
+        self.self_attention_backend = getattr(config, "self_attention_backend", "cudnn")
+        replace_self_attention_ops(self.blocks, self.self_attention_backend)
         if not self.fp32_adaln:
             return
         # Re-class rather than rebuild: the subclasses add no state, so the
@@ -131,6 +139,20 @@ class EdenWanDiTNetwork(WanDiTNetwork):
             for module in img_emb.modules():
                 if type(module) is nn.LayerNorm:
                     module.__class__ = FP32LayerNorm
+
+    def update_parameters_after_loading_checkpoint(self) -> None:
+        """Fuse load-time ops, then derive the FP8 block projections if asked.
+
+        Runs after the checkpoint load (the FP8 weights are quantized from the
+        real values) and before ``torch.compile`` / CUDA-graph capture.
+        """
+        if self._parameters_updated_after_loading_checkpoint:
+            return
+        super().update_parameters_after_loading_checkpoint()
+        if self.linear_backend == "rowwise_fp8":
+            replace_large_linears_with_fp8(self.blocks)
+        elif self.linear_backend != "torch":
+            raise ValueError(f"unknown linear_backend {self.linear_backend!r}")
 
 
 __all__ = [
