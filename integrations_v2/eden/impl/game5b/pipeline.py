@@ -33,7 +33,6 @@ from __future__ import annotations
 import gc
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 from loguru import logger
@@ -106,9 +105,6 @@ class Game5BInferencePipeline(WanInferencePipeline):
         # ``initialize_cache``.
         self._text_cache: tuple[tuple[str, ...], Tensor] | None = None
         self._negative_text_cache: Tensor | None = None
-        # Set while the base ``initialize_cache`` runs, so the recording wrapper
-        # below knows which inputs the outputs belong to.
-        self._pending_text: tuple[str, ...] | None = None
 
     @staticmethod
     def _negative_prompt() -> str:
@@ -127,54 +123,45 @@ class Game5BInferencePipeline(WanInferencePipeline):
     ) -> WanInferencePipelineCache:
         """Build the rollout cache, reusing the text embeddings when unchanged.
 
-        The embeddings are cached against their prompt. A restart that re-runs
-        this method with the same prompt reuses them, so UMT5 is loaded exactly
-        once per process instead of once per rollout.
+        The prompt is encoded -- and the one-shot UMT5 released -- *before* the
+        self-attention KV cache is allocated. The base pipeline allocates the
+        cache first and frees UMT5 afterwards, so on a 32 GB card its startup
+        peak holds UMT5 (~10.6 GiB), the DiT and the KV cache at once.
+
+        The embeddings are cached against their prompt, so a restart with the
+        same prompt neither reloads UMT5 nor re-encodes.
         """
-        # Reuse before the base call: ``super().initialize_cache`` reloads the
-        # released one-shot encoder and re-encodes unconditionally, which is the
-        # restart stall this cache exists to avoid.
         if self.diffusion_model.config.max_latent_frames is not None:
             # A bounded replay is one deterministic video per rollout: rewind the
             # RNG so a restart with the same seed draws the same noise.
             self.diffusion_model.reset_noise()
         text_embeddings = self._cached_text_embeddings(text)
         reusing = text_embeddings is not None
-        logger.info(
-            "Game2V 5B: {} the rollout cache",
-            "reusing cached text embeddings for" if reusing else "building",
-        )
         cache_started = time.perf_counter()
+        if text_embeddings is None:
+            self._ensure_oneshot_encoders_loaded()
+            assert self.text_encoder is not None, "text_encoder is not set"
+            text_embeddings = self.text_encoder(text)
+            self._text_cache = (tuple(text), text_embeddings)
+            if release_oneshot_encoders:
+                self.release_oneshot_encoders()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         cache = self._initialize_cache_from_embeddings(
             text_embeddings,
             image,
             height=height,
             width=width,
         )
-        if cache is None:
-            # First time this prompt is seen: the base call loads the one-shot
-            # encoder, encodes, and releases it. The wrapper records what it
-            # computed so the next call skips all of it.
-            self._pending_text = tuple(text)
-            try:
-                cache = self._initialize_cache_recording(
-                    text,
-                    image,
-                    height=height,
-                    width=width,
-                    release_oneshot_encoders=release_oneshot_encoders,
-                )
-            finally:
-                self._pending_text = None
-
-        assert cache.image is not None, (
+        assert cache is not None and cache.image is not None, (
             "Game5BInferencePipeline is TI2V-only; pass ``image=...`` to "
             "``initialize_cache``."
         )
         logger.info(
             "Game2V 5B: rollout cache ready in {:.2f}s ({})",
             time.perf_counter() - cache_started,
-            "text embeddings reused" if reusing else "text encoder loaded and released",
+            "text embeddings reused" if reusing else "text encoded, encoder released",
         )
         return cache
 
@@ -184,75 +171,6 @@ class Game5BInferencePipeline(WanInferencePipeline):
         if cached is None or cached[0] != tuple(text):
             return None
         return cached[1]
-
-    def _initialize_cache_recording(
-        self,
-        text: list[str],
-        image: Tensor | None,
-        *,
-        height: int | None,
-        width: int | None,
-        release_oneshot_encoders: bool,
-    ) -> WanInferencePipelineCache:
-        """Run the base cache init while capturing the text embeddings.
-
-        The base implementation calls the encoder directly and keeps nothing but
-        the transformer cache, so the output is intercepted here by wrapping the
-        encoder for the duration of the call.
-
-        The encoder is loaded here rather than left to the base call: after the
-        first rollout released it, ``self.text_encoder`` is ``None`` and there
-        would be nothing to wrap, so the embeddings the base call computes would
-        go unrecorded and every restart with a new prompt would reload UMT5
-        again. Loading first costs nothing -- the base call's own
-        ``_ensure_oneshot_encoders_loaded`` is a no-op once the slot is filled.
-        """
-        self._ensure_oneshot_encoders_loaded()
-        text_encoder = self.text_encoder
-
-        class _Recording(torch.nn.Module):
-            """Forwards one encoder call and keeps its output.
-
-            An ``nn.Module`` rather than a plain object because the encoder is a
-            registered submodule: assigning anything else is rejected.
-            """
-
-            def __init__(self, inner: torch.nn.Module, record: Any) -> None:
-                super().__init__()
-                self.inner = inner
-                self._record = record
-
-            def forward(self, *args: Any, **kwargs: Any) -> Any:
-                output = self.inner(*args, **kwargs)
-                self._record(*args, output)
-                return output
-
-        try:
-            if isinstance(text_encoder, torch.nn.Module):
-                self.text_encoder = _Recording(
-                    text_encoder, self._record_text_embeddings
-                )
-            return super().initialize_cache(
-                text,
-                image,
-                height=height,
-                width=width,
-                release_oneshot_encoders=release_oneshot_encoders,
-            )
-        finally:
-            # The base releases the one-shot encoder when asked, which drops the
-            # wrapper. Only restore an encoder it actually kept; restoring one it
-            # released would pin the weights in memory permanently.
-            if self.text_encoder is not None:
-                self.text_encoder = text_encoder
-            gc.collect()
-
-    def _record_text_embeddings(self, text: list[str], embeddings: Tensor) -> None:
-        """Keep embeddings the base call just computed, keyed by their prompt."""
-        if self._pending_text is not None and tuple(text) == self._pending_text:
-            self._text_cache = (self._pending_text, embeddings)
-        elif text == [self._negative_prompt()]:
-            self._negative_text_cache = embeddings
 
     def _initialize_cache_from_embeddings(
         self,

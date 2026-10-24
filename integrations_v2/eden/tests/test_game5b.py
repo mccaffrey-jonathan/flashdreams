@@ -445,111 +445,69 @@ def test_negative_prompt_is_the_recipe_english_string() -> None:
     assert NEGATIVE_PROMPT.endswith("fused fingers, three legs")
 
 
+def _bare_pipeline(encoder_factory):
+    """A ``Game5BInferencePipeline`` without ``__init__`` (no real weights)."""
+    from eden.impl.game5b.pipeline import Game5BInferencePipeline
+
+    events: list[str] = []
+
+    class _Pipeline(Game5BInferencePipeline):
+        def _ensure_oneshot_encoders_loaded(self):
+            if self.text_encoder is None:
+                events.append("load")
+                self.text_encoder = encoder_factory(events)
+
+        def release_oneshot_encoders(self):
+            events.append("release")
+            self.text_encoder = None
+
+        def _initialize_cache_from_embeddings(self, text_embeddings, image, *, height, width):
+            del height, width
+            # The KV cache is allocated here; the encoder must already be gone.
+            events.append("kv" if self.text_encoder is None else "kv-with-encoder")
+            return SimpleNamespace(image=image, transformer_cache=SimpleNamespace())
+
+    pipeline = Game5BInferencePipeline.__new__(_Pipeline)
+    torch.nn.Module.__init__(pipeline)
+    pipeline.diffusion_model = SimpleNamespace(config=SimpleNamespace(max_latent_frames=None))
+    pipeline._text_cache = None
+    pipeline._negative_text_cache = None
+    pipeline.text_encoder = None
+    return pipeline, events
+
+
+class _Encoder(torch.nn.Module):
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    def forward(self, text):  # noqa: D102 - test double
+        self.events.append(f"encode:{text[0]}")
+        return torch.zeros(1, 2)
+
+
+def test_prompt_is_encoded_and_released_before_the_kv_cache() -> None:
+    """UMT5 never coexists with the freshly allocated KV cache."""
+    pipeline, events = _bare_pipeline(_Encoder)
+    pipeline.initialize_cache(["a cat"], torch.zeros(1, 1, 3, 32, 32))
+    assert events == ["load", "encode:a cat", "release", "kv"]
+
+
 def test_restart_reuses_the_text_embeddings() -> None:
     """A second ``initialize_cache`` must not reload or re-run the encoder.
 
     The Game2V session rebuilds the rollout cache on every restart; reloading
     the released UMT5 and re-encoding an unchanged prompt is that stall.
     """
-    from eden.impl.game5b.pipeline import Game5BInferencePipeline
-
-    calls = {"base": 0}
-
-    class _Pipeline(Game5BInferencePipeline):
-        def _initialize_cache_recording(self, text, image, **kwargs):
-            del kwargs
-            calls["base"] += 1
-            self._text_cache = (tuple(text), torch.zeros(1, 2))
-            return SimpleNamespace(image=image, transformer_cache=SimpleNamespace())
-
-        def _initialize_cache_from_embeddings(
-            self, text_embeddings, image, *, height, width
-        ):
-            del height, width
-            if text_embeddings is None:
-                return None
-            return SimpleNamespace(image=image, transformer_cache=SimpleNamespace())
-
-    pipeline = Game5BInferencePipeline.__new__(_Pipeline)
-    pipeline.diffusion_model = SimpleNamespace(
-        config=SimpleNamespace(max_latent_frames=None)
-    )
-    # Bypass ``__init__``: it builds the real encoders and loads checkpoints.
-    pipeline._text_cache = None
-    pipeline._negative_text_cache = None
-    pipeline._pending_text = None
+    pipeline, events = _bare_pipeline(_Encoder)
     image = torch.zeros(1, 1, 3, 32, 32)
-
     first = pipeline.initialize_cache(["a cat"], image)
     second = pipeline.initialize_cache(["a cat"], image)
-    assert calls == {"base": 1}
     assert second is not first
-
-    # A prompt that actually changed is re-encoded.
+    assert events.count("load") == 1 and events.count("encode:a cat") == 1
+    # A prompt that actually changed is re-encoded (after a reload).
     pipeline.initialize_cache(["a dog"], image)
-    assert calls == {"base": 2}
-
-
-def test_recording_reloads_a_released_encoder_before_wrapping(monkeypatch) -> None:
-    """A new prompt after a release must still land in the cache.
-
-    The first rollout releases the text encoder, so ``self.text_encoder`` is
-    ``None`` on the next call. Without reloading first there would be nothing to
-    wrap, the base call's embeddings would go unrecorded, and every later restart
-    would reload UMT5 again.
-    """
-    from flashdreams.recipes.wan.pipeline import WanInferencePipeline
-
-    from eden.impl.game5b.pipeline import Game5BInferencePipeline
-
-    embeddings = torch.zeros(1, 512, 4096)
-    loaded = {"count": 0}
-
-    class _Encoder(torch.nn.Module):
-        def forward(self, text):  # noqa: D102 - test double
-            del text
-            return embeddings
-
-    def _base_initialize_cache(self, text, image=None, **kwargs):
-        """Stand in for the real base: encode, then release as it does."""
-        del kwargs
-        self._ensure_oneshot_encoders_loaded()
-        assert self.text_encoder is not None
-        self.text_encoder(text)
-        self.text_encoder = None
-        return SimpleNamespace(image=image, transformer_cache=SimpleNamespace())
-
-    # ``_initialize_cache_recording`` reaches the base through ``super()``, so
-    # the stub has to sit on the base class rather than on the subclass.
-    monkeypatch.setattr(
-        WanInferencePipeline, "initialize_cache", _base_initialize_cache
-    )
-
-    class _Pipeline(Game5BInferencePipeline):
-        def _ensure_oneshot_encoders_loaded(self):
-            if self.text_encoder is None:
-                loaded["count"] += 1
-                self.text_encoder = _Encoder()
-
-    pipeline = Game5BInferencePipeline.__new__(_Pipeline)
-    # Bypass ``__init__``: it builds the real components and loads checkpoints.
-    torch.nn.Module.__init__(pipeline)
-    pipeline._text_cache = None
-    pipeline._negative_text_cache = None
-    # The state a released encoder leaves behind.
-    pipeline.text_encoder = None
-    pipeline._pending_text = ("a cat",)
-
-    pipeline._initialize_cache_recording(
-        ["a cat"], None, height=None, width=None, release_oneshot_encoders=True
-    )
-    # Loaded once, by the recording path, before the wrapper went on.
-    assert loaded["count"] == 1
-    # The embeddings were recorded despite the slot starting out empty, so the
-    # next restart on this prompt reuses them.
-    assert pipeline._text_cache is not None
-    assert pipeline._text_cache[0] == ("a cat",)
-    assert pipeline._text_cache[1] is embeddings
+    assert events[-4:] == ["load", "encode:a dog", "release", "kv"]
 
 
 def test_control_stream_resamples_onto_the_5b_latent_grid() -> None:
