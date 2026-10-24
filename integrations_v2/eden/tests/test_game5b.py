@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from eden.game5b_config import (
+from eden.config import (
     GAME2V_5B_FPS,
     GAME2V_5B_LEN_T,
     GAME2V_5B_PIXEL_HEIGHT,
@@ -310,7 +310,7 @@ def test_checkpoint_points_at_the_published_ema_file() -> None:
     The live generator, the DMD critic and both optimizer states are not in the
     weight tree at all, which is what makes sampling the wrong one impossible.
     """
-    from eden.model_root import EDEN_MODEL_ROOT
+    from eden.impl.model_root import EDEN_MODEL_ROOT
 
     transformer = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer
     assert transformer.dcp_checkpoint_path == (

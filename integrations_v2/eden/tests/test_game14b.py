@@ -15,8 +15,8 @@ from eden.apps.game2v.game14b import (
     resolve_game14b_conditioning,
 )
 from eden.apps.game2v.game_renderer import registered_game_slugs
-from eden.game14b_config import (
-    GAME2V_LEN_T,
+from eden.config import (
+    GAME2V_14B_LEN_T as GAME2V_LEN_T,
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B,
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV,
 )

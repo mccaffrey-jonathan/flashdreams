@@ -16,11 +16,11 @@ from eden.apps.game2v.game5b import (
     make_game5b_control_stream,
     resolve_game5b_conditioning,
 )
-from eden.game14b_config import (
+from eden.config import (
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B,
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV,
 )
-from eden.game5b_config import (
+from eden.config import (
     GAME2V_5B_FPS,
     GAME2V_5B_PIXEL_HEIGHT,
     GAME2V_5B_PIXEL_WIDTH,
@@ -76,7 +76,7 @@ def create_app_v2_14b_taehv() -> IApplication:
 # Proxy-DINO conditioned 5B. Same game-conditioned shell as the 14B,
 # but Wan 2.2 TI2V-5B rather than Wan 2.1 14B I2V, which moves three of the
 # defaults: the frame size is 704x1280 (the only size whose token count shards
-# across 8 ranks under the 16x VAE -- see eden.game5b_config), the frame rate is
+# across 8 ranks under the 16x VAE -- see eden.config), the frame rate is
 # 24 rather than 16, and the control stream resamples onto a /16 grid.
 GAME2V_EDEN_WORLD_V2_5B_DEFAULTS = dataclasses.replace(
     GAME2V_EDEN_WORLD_V2_14B_DEFAULTS,

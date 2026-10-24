@@ -125,8 +125,8 @@ def make_game14b_control_stream(config: Any, session_desc: Any) -> ProxyDinoCont
     VAE's 8x spatial ratio, so the features land on the DiT's grid without a
     second resample at consume time.
     """
-    from eden.game14b_config import GAME2V_LEN_T, _SPEC
-    from eden.pipeline_yaml import component_path
+    from eden.config import GAME2V_14B_LEN_T as GAME2V_LEN_T, GAME2V_14B_SPEC as _SPEC
+    from eden.impl.pipeline_yaml import component_path
 
     pixel_width = config.model_video_width or session_desc.video_width
     pixel_height = config.model_video_height or session_desc.video_height

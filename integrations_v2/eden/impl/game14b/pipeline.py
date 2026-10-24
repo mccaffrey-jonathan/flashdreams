@@ -133,8 +133,9 @@ class Game14BInferencePipeline(WanInferencePipeline):
         # released one-shot encoders and re-encodes unconditionally, which is
         # the restart stall this cache exists to avoid.
         if self.diffusion_model.config.max_latent_frames is not None:
-            self.diffusion_model._rng = None
-            self.diffusion_model._initial_video_noise = None
+            # A bounded replay is one deterministic video per rollout: rewind the
+            # RNG so a restart with the same seed draws the same noise.
+            self.diffusion_model.reset_noise()
         text_embeddings = self._cached_text_embeddings(text)
         image_embeddings = (
             self._cached_image_embeddings(image) if image is not None else None

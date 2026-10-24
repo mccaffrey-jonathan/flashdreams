@@ -13,7 +13,7 @@ between ``eden/configs/*.yaml`` and the adapter that reads them, except the
 result here is a config object rather than a plain dict.
 
 Paths under ``components`` are relative to the config's own ``model_root``, or
-to :data:`eden.model_root.EDEN_MODEL_ROOT` when that is ``null``, so no
+to :data:`eden.impl.model_root.EDEN_MODEL_ROOT` when that is ``null``, so no
 machine-local prefix is baked into the code. Absolute paths and URLs are used
 as written.
 """
@@ -26,9 +26,9 @@ from typing import Any
 import torch
 import yaml
 
-from eden.model_root import eden_model_root
+from eden.impl.model_root import eden_model_root
 
-CONFIGS_DIR = Path(__file__).parent / "configs"
+CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 # ``timestep_dtype`` is a torch dtype, which YAML cannot spell, so it is named.
 _DTYPES = {

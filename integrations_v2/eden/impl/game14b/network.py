@@ -26,10 +26,11 @@ import torch
 from torch import Tensor, nn
 
 from flashdreams.recipes.wan.transformer.impl.network import (
-    WanDiTNetwork,
     WanDiTNetwork14BConfig,
     WanDiTNetworkCache,
 )
+
+from eden.impl.numerics import EdenWanDiTNetwork
 
 # 16 noisy latent + 4 first-frame mask + 16 condition latent.
 GAME14B_I2V_CHANNELS = 16 + 4 + 16
@@ -37,7 +38,7 @@ GAME14B_I2V_CHANNELS = 16 + 4 + 16
 GAME14B_CONTROL_DIM = 1024
 
 
-class Game14BDiTNetwork(WanDiTNetwork):
+class Game14BDiTNetwork(EdenWanDiTNetwork):
     """14B I2V DiT whose appended control channels carry their own RMSNorm.
 
     ``condition_norm`` is built in ``__init__`` (not lazily) because the
@@ -126,6 +127,8 @@ class Game14BDiTNetworkConfig(WanDiTNetwork14BConfig):
     _target: type[Game14BDiTNetwork] = Game14BDiTNetwork
 
     in_dim: int = GAME14B_I2V_CHANNELS + GAME14B_CONTROL_DIM
+    fp32_adaln: bool = False
+    """Run AdaLN, LayerNorms and residual adds in fp32 (Diffusers precision)."""
     control_dim: int = GAME14B_CONTROL_DIM
     # Wan 2.1 I2V ships a CLIP vision branch (k_img / v_img / img_emb).
     cross_attn_enable_img: bool = True

@@ -45,7 +45,7 @@ from flashdreams.recipes.wan.pipeline import (
     WanInferencePipelineConfig,
 )
 
-from flashdreams.infra.encoder.text.umt5 import UMT5TextEncoderConfig
+from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
 
 from .encoder import Game5BCtrlEncoderConfig, Game5BCtrlInput
 
@@ -78,7 +78,7 @@ class Game5BInferencePipelineConfig(WanInferencePipelineConfig):
     cannot switch on a DiT cross-attention branch these weights do not have.
     """
 
-    text_encoder: UMT5TextEncoderConfig | None = None
+    text_encoder: EdenUMT5TextEncoderConfig | None = None
     """UMT5 text encoder. The directory must hold ``text_encoder/`` and
     ``tokenizer/`` side by side, which is the layout both ``from_pretrained``
     calls read. Set by the pipeline YAML; there is no built-in default path."""
@@ -135,8 +135,9 @@ class Game5BInferencePipeline(WanInferencePipeline):
         # released one-shot encoder and re-encodes unconditionally, which is the
         # restart stall this cache exists to avoid.
         if self.diffusion_model.config.max_latent_frames is not None:
-            self.diffusion_model._rng = None
-            self.diffusion_model._initial_video_noise = None
+            # A bounded replay is one deterministic video per rollout: rewind the
+            # RNG so a restart with the same seed draws the same noise.
+            self.diffusion_model.reset_noise()
         text_embeddings = self._cached_text_embeddings(text)
         reusing = text_embeddings is not None
         logger.info(

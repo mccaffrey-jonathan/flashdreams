@@ -35,13 +35,14 @@ from dataclasses import dataclass
 from torch import Tensor
 
 from flashdreams.recipes.wan.transformer.impl.network import (
-    WanDiTNetwork,
     WanDiTNetworkCache,
     WanDiTNetworkTI2V5BConfig,
 )
 
+from eden.impl.numerics import EdenWanDiTNetwork
 
-class Game5BDiTNetwork(WanDiTNetwork):
+
+class Game5BDiTNetwork(EdenWanDiTNetwork):
     """TI2V-5B DiT with the per-chunk prompt hook the dynamic path needs.
 
     The widened patch embedding is an ordinary ``nn.Conv3d`` and every other
@@ -110,6 +111,8 @@ class Game5BDiTNetworkConfig(WanDiTNetworkTI2V5BConfig):
     _target: type[Game5BDiTNetwork] = Game5BDiTNetwork
 
     in_dim: int = GAME5B_LATENT_CHANNELS + GAME5B_CONTROL_DIM
+    fp32_adaln: bool = False
+    """Run AdaLN, LayerNorms and residual adds in fp32 (Diffusers precision)."""
     control_dim: int = GAME5B_CONTROL_DIM
     patch_embedding_type: str = "conv3d"
     # 24 heads do not shard evenly across 8 ranks, so token sharding rather

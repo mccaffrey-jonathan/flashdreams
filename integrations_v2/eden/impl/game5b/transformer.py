@@ -46,7 +46,10 @@ from flashdreams.recipes.wan.transformer.wan21 import (
 # The payload is structurally identical to the 14B's, so it is shared rather
 # than redeclared; ``eden.impl.game14b`` hosts the proxy-DINO pieces both
 # models use (this one, the DINOv3 encoder and the overlapped control stream).
-from eden.impl.game14b.transformer import I2VProxyDinoCtrl
+from eden.impl.game14b.transformer import (
+    I2VProxyDinoCtrl,
+    commit_kv_cache_scalar_timestep,
+)
 
 from .checkpoint import load_game5b_dit_state_dict
 from .network import Game5BDiTNetwork, Game5BDiTNetworkConfig
@@ -185,6 +188,17 @@ class Game5BTransformer(Wan21Transformer):
             input=input.i2v if input is not None else None,
             autoregressive_index=autoregressive_index,
         )
+
+    def finalize_kv_cache(  # type: ignore[override]
+        self,
+        noisy_latent: torch.Tensor,
+        timestep: torch.Tensor,
+        cache,
+        input: I2VProxyDinoCtrl | None = None,
+    ) -> None:
+        """Commit the clean chunk with a scalar timestep, as the reference."""
+        commit_kv_cache_scalar_timestep(self, noisy_latent, timestep, cache, input)
+
 
 
 __all__ = [

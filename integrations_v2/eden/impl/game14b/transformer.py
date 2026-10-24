@@ -38,6 +38,28 @@ from .checkpoint import load_game14b_dit_state_dict
 from .network import Game14BDiTNetwork, Game14BDiTNetworkConfig
 
 
+def commit_kv_cache_scalar_timestep(
+    transformer: Wan21Transformer,
+    noisy_latent: Tensor,
+    timestep: Tensor,
+    cache,
+    input,
+) -> None:
+    """Run the AR cache-commit forward(s) with a *scalar* timestep.
+
+    :meth:`Transformer.finalize_kv_cache` goes through ``predict_flow``, which
+    expands the AR-0 timestep per token for the TI2V first-frame stamp. The
+    reference commits with a scalar ``t = context_noise`` at every AR step,
+    including AR 0; with ``context_noise == 0`` the values agree but the
+    time-MLP GEMM shape differs, so the numerics do too. No CFG combine: only
+    the cache side effect matters.
+    """
+    network_input = transformer._build_network_input(noisy_latent, input)
+    ar_idx = cache.autoregressive_index
+    transformer._predict_flow(network_input, timestep, cache, ar_idx, {}, uncond=False)
+    if cache.network_cache_uncond is not None:
+        transformer._predict_flow(network_input, timestep, cache, ar_idx, {}, uncond=True)
+
 @dataclass(kw_only=True)
 class I2VProxyDinoCtrl:
     """Per-AR-step I2V control plus the proxy-DINO channel-concat control."""
@@ -193,8 +215,20 @@ class Game14BTransformer(Wan21Transformer):
             autoregressive_index=autoregressive_index,
         )
 
+    def finalize_kv_cache(  # type: ignore[override]
+        self,
+        noisy_latent: Tensor,
+        timestep: Tensor,
+        cache,
+        input: I2VProxyDinoCtrl | None = None,
+    ) -> None:
+        """Commit the clean chunk with a scalar timestep, as the reference."""
+        commit_kv_cache_scalar_timestep(self, noisy_latent, timestep, cache, input)
+
+
 
 __all__ = [
+    "commit_kv_cache_scalar_timestep",
     "Game14BTransformer",
     "Game14BTransformerConfig",
     "I2VProxyDinoCtrl",
