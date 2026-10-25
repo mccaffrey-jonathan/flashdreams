@@ -270,6 +270,38 @@ multidict              Apache-2.0   https://github.com/aio-libs/multidict
 opencv-python-headless Apache-2.0   https://github.com/opencv/opencv-python
 
 ================================================================================
+Optional integration: integrations_v2/eden
+================================================================================
+
+EdenLive source       Apache-2.0   https://github.com/VAST-AI-Research/EdenLive
+    Copyright (c) 2026 Vast AI. integrations_v2/eden is ported from
+    realtime/integrations_v2/eden at commit 0b78d21 (itself built on a fork
+    of FlashDreams); files carry both copyright lines.
+EdenLive weights      mixed        https://huggingface.co/VAST-AI/EdenLive
+    Downloaded separately, never redistributed here. Per the model card and
+    the per-directory LICENSE/NOTICE files:
+      dit-*, vae-*, umt5/, scheduler-*, decoder-*   Apache-2.0
+      clip/ (14B only)                              MIT (LAION CLIP ViT-H/14)
+      vision-encoder/ (required)                    DINOv3 License (Meta)
+        https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md
+        Royalty-free and commercial use allowed, but not an OSI license:
+        trade-control and prohibited-use terms, no reverse engineering,
+        pass-through on redistribution, and publications must acknowledge
+        DINOv3.
+      flux-c2f/                                     FLUX Non-Commercial v2.1
+        Used only by VAST's workbench first-frame renderer, which this
+        integration does not port. Not needed; do not download it.
+EdenLive games        Apache-2.0 (with MIT GameBlocks modules and the MIT
+                      html-to-image bundle)
+    Not vendored. The Game2V app reads them from an EdenLive checkout
+    (EDEN_GAMES_ROOT). three.js (MIT) is installed there by npm.
+playwright            Apache-2.0   https://github.com/microsoft/playwright-python
+    Optional ``game`` extra; ``python -m playwright install chromium``
+    downloads Chromium (BSD-3-Clause and bundled third-party licenses).
+av (PyAV)             BSD-3-Clause https://github.com/PyAV-Org/PyAV
+    Wheels bundle FFmpeg libraries (LGPL/GPL builds).
+
+================================================================================
 Optional integration: integrations_v2/sana_wm
 ================================================================================
 
