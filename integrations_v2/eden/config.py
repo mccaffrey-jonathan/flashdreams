@@ -149,6 +149,29 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV = derive_config(
 )
 """The 5B pipeline with the LightTAE Wan 2.2 decoder instead of the Wan VAE."""
 
+# Single 32 GB GeForce (RTX 5090) preset: dynamic row-wise FP8 block linears
+# plus the in-tree Sage-style FP8 self-attention, with torch.compile and CUDA
+# graphs. Measured on an RTX 5090 (Windows, torch 2.12.1+cu130): ~18 GiB peak,
+# ~0.64 s per 12-frame chunk once the KV window is full, with output inside the
+# bf16 run-to-run noise floor. The first run compiles one graph per KV-fill
+# shape (several minutes) before reaching steady state.
+PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV_RTX5090 = derive_config(
+    PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV,
+    name=f"{GAME2V_5B_SPEC['taehv']['name']}-rtx-5090",
+    diffusion_model=dict(
+        transformer=dict(
+            network=derive_config(
+                PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV.diffusion_model.transformer.network,
+                linear_backend="rowwise_fp8",
+                self_attention_backend="sage_fp8",
+            ),
+            compile_network=True,
+            use_cuda_graph=True,
+        ),
+    ),
+)
+"""The 5B LightTAE pipeline with FP8 linears and FP8 Sage attention (single GPU)."""
+
 # ---------------------------------------------------------------------------
 # 14B: Wan 2.1 I2V-14B, proxy-DINO conditioned, AR
 # ---------------------------------------------------------------------------
@@ -245,4 +268,5 @@ __all__ = [
     "PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV",
     "PIPELINE_GAME2V_EDEN_WORLD_V2_5B",
     "PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV",
+    "PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV_RTX5090",
 ]

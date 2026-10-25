@@ -37,6 +37,7 @@ dev = [
 
 [project.entry-points."flashdreams.applications_v2"]
 "game2v-eden-world-v2-5b-taehv" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv"
+"game2v-eden-world-v2-5b-taehv-rtx-5090" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv_rtx5090"
 "game2v-eden-world-v2-14b-taehv" = "eden.apps.game2v.adapter:create_app_v2_14b_taehv"
 
 [tool.setuptools.package-data]
