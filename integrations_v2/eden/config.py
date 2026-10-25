@@ -37,24 +37,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from flashdreams.infra.config import derive_config
-from flashdreams.infra.encoder.image.clip import CLIPImageEncoderConfig
-from flashdreams.recipes.taehv import TaehvVAEDecoderConfig
-from flashdreams.recipes.wan.autoencoder.vae import (
-    Wan22TI2V5BVAEDecoderConfig,
-    WanVAEDecoderConfig,
-    WanVAEEncoderConfig,
-)
-
 from eden.impl.diffusion import EdenDiffusionModelConfig
-from eden.impl.game14b.encoder import Game14BCtrlEncoderConfig
-from eden.impl.game14b.network import Game14BDiTNetworkConfig
-from eden.impl.game14b.pipeline import Game14BInferencePipelineConfig
-from eden.impl.game14b.transformer import Game14BTransformerConfig
 from eden.impl.game5b.encoder import Game5BCtrlEncoderConfig
 from eden.impl.game5b.network import Game5BDiTNetworkConfig
 from eden.impl.game5b.pipeline import Game5BInferencePipelineConfig
 from eden.impl.game5b.transformer import Game5BTransformerConfig
+from eden.impl.game14b.encoder import Game14BCtrlEncoderConfig
+from eden.impl.game14b.network import Game14BDiTNetworkConfig
+from eden.impl.game14b.pipeline import Game14BInferencePipelineConfig
+from eden.impl.game14b.transformer import Game14BTransformerConfig
 from eden.impl.pipeline_yaml import (
     component_path,
     load_pipeline_yaml,
@@ -65,6 +56,14 @@ from eden.impl.scheduler import EdenFlowMatchSchedulerConfig
 from eden.impl.taehv_wan22 import TaehvVAEWan22DecoderConfig
 from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
 from eden.impl.vae import EdenWan22TI2V5BVAEEncoderConfig
+from flashdreams.infra.config import derive_config
+from flashdreams.infra.encoder.image.clip import CLIPImageEncoderConfig
+from flashdreams.recipes.taehv import TaehvVAEDecoderConfig
+from flashdreams.recipes.wan.autoencoder.vae import (
+    Wan22TI2V5BVAEDecoderConfig,
+    WanVAEDecoderConfig,
+    WanVAEEncoderConfig,
+)
 
 # ---------------------------------------------------------------------------
 # 5B: Wan 2.2 TI2V-5B, proxy-DINO conditioned, AR
@@ -144,7 +143,9 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV = derive_config(
     PIPELINE_GAME2V_EDEN_WORLD_V2_5B,
     name=GAME2V_5B_SPEC["taehv"]["name"],
     decoder=TaehvVAEWan22DecoderConfig(
-        checkpoint_path=resolve_path(GAME2V_5B_SPEC, GAME2V_5B_SPEC["taehv"]["decoder"]),
+        checkpoint_path=resolve_path(
+            GAME2V_5B_SPEC, GAME2V_5B_SPEC["taehv"]["decoder"]
+        ),
     ),
 )
 """The 5B pipeline with the LightTAE Wan 2.2 decoder instead of the Wan VAE."""
@@ -179,7 +180,9 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV_RTX5090 = derive_config(
 GAME2V_14B_SPEC: dict[str, Any] = load_pipeline_yaml("game2v_14b")
 """The parsed ``configs/game2v_14b.yaml``."""
 
-GAME2V_EDEN_WORLD_V2_14B_CHECKPOINT_PATH = component_path(GAME2V_14B_SPEC, "transformer")
+GAME2V_EDEN_WORLD_V2_14B_CHECKPOINT_PATH = component_path(
+    GAME2V_14B_SPEC, "transformer"
+)
 """The distilled 14B DiT, read by
 :func:`eden.impl.game14b.checkpoint.load_game14b_dit_state_dict`."""
 
@@ -242,7 +245,9 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV = derive_config(
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B,
     name=GAME2V_14B_SPEC["taehv"]["name"],
     decoder=TaehvVAEDecoderConfig(
-        checkpoint_path=resolve_path(GAME2V_14B_SPEC, GAME2V_14B_SPEC["taehv"]["decoder"]),
+        checkpoint_path=resolve_path(
+            GAME2V_14B_SPEC, GAME2V_14B_SPEC["taehv"]["decoder"]
+        ),
     ),
 )
 """The 14B pipeline with the LightTAE decoder instead of the Wan VAE."""

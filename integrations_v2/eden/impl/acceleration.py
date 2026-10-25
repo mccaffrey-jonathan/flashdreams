@@ -47,7 +47,9 @@ def _rowwise_fp8_linear(projection: QuantizedNonPersistentLinear, x: Tensor) -> 
     """Apply ``projection`` with compile-fusible row-wise FP8 quantization."""
     if x.numel() == 0:
         return projection(x, Granularity.SLICE, out_dtype=x.dtype)
-    quantized, scale = quantize(x, projection.dtype, Granularity.SLICE, axis=-1, use_triton=False)
+    quantized, scale = quantize(
+        x, projection.dtype, Granularity.SLICE, axis=-1, use_triton=False
+    )
     return projection(quantized, scale, out_dtype=x.dtype)
 
 
@@ -156,7 +158,9 @@ class SingleGPUAttentionOp(nn.Module):
         return self._op(query.contiguous(), key.contiguous(), value.contiguous())
 
 
-def replace_self_attention_ops(blocks: nn.ModuleList, backend: SelfAttentionBackend) -> None:
+def replace_self_attention_ops(
+    blocks: nn.ModuleList, backend: SelfAttentionBackend
+) -> None:
     """Point every block's self-attention at ``backend``."""
     if backend == "cudnn":
         return

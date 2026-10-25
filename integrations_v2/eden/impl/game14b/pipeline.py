@@ -45,6 +45,7 @@ from flashdreams.recipes.wan.pipeline import (
     WanInferencePipelineCache,
     WanInferencePipelineConfig,
 )
+
 from .encoder import Game14BCtrlEncoderConfig, Game14BCtrlInput
 
 GAME14B_NEGATIVE_PROMPT = (

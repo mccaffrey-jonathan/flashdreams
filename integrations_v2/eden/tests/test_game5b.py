@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-
 from eden.config import (
     GAME2V_5B_FPS,
     GAME2V_5B_LEN_T,
@@ -193,12 +192,12 @@ def test_taehv_variant_swaps_only_the_decoder() -> None:
     end up at 16 the latent grid would be sized from ``704 / 8 = 88`` instead of
     44, and the whole patch grid would misalign with no error attached.
     """
-    from flashdreams.recipes.wan.autoencoder.vae import WanVAE
-
     from eden.impl.taehv_wan22 import (
         TaehvVAEWan22Decoder,
         TaehvVAEWan22DecoderConfig,
     )
+
+    from flashdreams.recipes.wan.autoencoder.vae import WanVAE
 
     base = PIPELINE_GAME2V_EDEN_WORLD_V2_5B
     variant = PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV
@@ -243,13 +242,13 @@ def test_taehv_variant_denormalizes_with_the_wan22_vae_statistics() -> None:
     would use. The 14B's 16-channel table is both the wrong length and the wrong
     distribution.
     """
+    from eden.impl.taehv_wan22 import TaehvVAEWan22Decoder
+
     from flashdreams.recipes.taehv import TaehvVAEDecoder
     from flashdreams.recipes.wan.autoencoder.vae import (
         _WAN22_TI2V_5B_LATENT_MEAN,
         _WAN22_TI2V_5B_LATENT_STD,
     )
-
-    from eden.impl.taehv_wan22 import TaehvVAEWan22Decoder
 
     assert TaehvVAEWan22Decoder._LIGHTTAE_MEAN == tuple(_WAN22_TI2V_5B_LATENT_MEAN)
     assert TaehvVAEWan22Decoder._LIGHTTAE_STD == tuple(_WAN22_TI2V_5B_LATENT_STD)
@@ -263,6 +262,8 @@ def test_taehv_app_defaults_keep_the_5b_wiring() -> None:
 
     from eden.apps.game2v.adapter import (
         GAME2V_EDEN_WORLD_V2_5B_DEFAULTS,
+    )
+    from eden.apps.game2v.adapter import (
         GAME2V_EDEN_WORLD_V2_5B_TAEHV_DEFAULTS as defaults,
     )
 
@@ -461,7 +462,9 @@ def _bare_pipeline(encoder_factory):
             events.append("release")
             self.text_encoder = None
 
-        def _initialize_cache_from_embeddings(self, text_embeddings, image, *, height, width):
+        def _initialize_cache_from_embeddings(
+            self, text_embeddings, image, *, height, width
+        ):
             del height, width
             # The KV cache is allocated here; the encoder must already be gone.
             events.append("kv" if self.text_encoder is None else "kv-with-encoder")

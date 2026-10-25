@@ -34,13 +34,12 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
+from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
+from eden.impl.numerics import EdenWanDiTNetwork
 from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetworkCache,
     WanDiTNetworkTI2V5BConfig,
 )
-
-from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
-from eden.impl.numerics import EdenWanDiTNetwork
 
 
 class Game5BDiTNetwork(EdenWanDiTNetwork):
@@ -88,6 +87,7 @@ class Game5BDiTNetwork(EdenWanDiTNetwork):
         for block, block_cache in zip(self.blocks, cache.block_caches):
             fresh = block.cross_attn.compute_kv(context_text)
             block_cache.cross_attn.text.overwrite_kv_(*fresh.clone_kv())
+
 
 # The 5B VAE's latent width; the noisy latent occupies these leading channels.
 GAME5B_LATENT_CHANNELS = 48

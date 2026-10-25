@@ -58,7 +58,10 @@ def commit_kv_cache_scalar_timestep(
     ar_idx = cache.autoregressive_index
     transformer._predict_flow(network_input, timestep, cache, ar_idx, {}, uncond=False)
     if cache.network_cache_uncond is not None:
-        transformer._predict_flow(network_input, timestep, cache, ar_idx, {}, uncond=True)
+        transformer._predict_flow(
+            network_input, timestep, cache, ar_idx, {}, uncond=True
+        )
+
 
 @dataclass(kw_only=True)
 class I2VProxyDinoCtrl:
@@ -81,9 +84,7 @@ class Game14BTransformerConfig(Wan21TransformerConfig):
         default_factory=lambda: Game14BTransformer
     )
 
-    network: Game14BDiTNetworkConfig = field(
-        default_factory=Game14BDiTNetworkConfig
-    )
+    network: Game14BDiTNetworkConfig = field(default_factory=Game14BDiTNetworkConfig)
 
     dcp_checkpoint_path: str | None = None
     """Published safetensors file, holding the DiT with Diffusers keys.
@@ -101,7 +102,10 @@ class Game14BTransformer(Wan21Transformer):
     network: Game14BDiTNetwork
 
     def __init__(self, config: Game14BTransformerConfig) -> None:
-        if config.dcp_checkpoint_path is not None and config.checkpoint_path is not None:
+        if (
+            config.dcp_checkpoint_path is not None
+            and config.checkpoint_path is not None
+        ):
             raise ValueError(
                 "set either dcp_checkpoint_path or checkpoint_path, not both"
             )
@@ -133,8 +137,7 @@ class Game14BTransformer(Wan21Transformer):
             load_started = time.perf_counter()
             state_dict = load_game14b_dit_state_dict(config.dcp_checkpoint_path)
             state_dict = {
-                key: value.to(dtype=config.dtype)
-                for key, value in state_dict.items()
+                key: value.to(dtype=config.dtype) for key, value in state_dict.items()
             }
             network.load_state_dict(state_dict, strict=True, assign=True)
             logger.info(
@@ -224,7 +227,6 @@ class Game14BTransformer(Wan21Transformer):
     ) -> None:
         """Commit the clean chunk with a scalar timestep, as the reference."""
         commit_kv_cache_scalar_timestep(self, noisy_latent, timestep, cache, input)
-
 
 
 __all__ = [

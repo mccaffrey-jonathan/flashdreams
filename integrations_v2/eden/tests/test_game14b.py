@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-
 from eden.apps.game2v.game14b import (
     game_cover_path,
     resolve_game14b_conditioning,
@@ -17,6 +16,8 @@ from eden.apps.game2v.game14b import (
 from eden.apps.game2v.game_renderer import registered_game_slugs
 from eden.config import (
     GAME2V_14B_LEN_T as GAME2V_LEN_T,
+)
+from eden.config import (
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B,
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV,
 )
@@ -241,9 +242,10 @@ def test_negative_prompt_is_the_14b_string() -> None:
     The camera model's v2 prompt must not leak in, and the shared recipe
     constant other Wan pipelines use stays untouched.
     """
+    from eden.impl.game14b.pipeline import Game14BInferencePipeline
+
     from flashdreams.recipes.wan.transformer.constants import NEGATIVE_PROMPT
 
-    from eden.impl.game14b.pipeline import Game14BInferencePipeline
     # The camera model's v2 negative prompt (VAST eden.impl.pipeline, not
     # ported: it belongs to the LingBot-derived cam2v presets).
     EDEN_WORLD_V2_NEGATIVE_PROMPT = "画面突变，" + NEGATIVE_PROMPT

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import Tensor
 
+from eden.impl.game14b.transformer import I2VProxyDinoCtrl
 from flashdreams.infra.encoder import (
     EncoderConfig,
     StreamingEncoderCache,
@@ -50,8 +51,6 @@ from flashdreams.recipes.wan.autoencoder.vae import (
     WanVAEEncoder,
     WanVAEEncoderConfig,
 )
-
-from eden.impl.game14b.transformer import I2VProxyDinoCtrl
 
 
 @dataclass(kw_only=True)

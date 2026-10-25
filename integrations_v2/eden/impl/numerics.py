@@ -23,13 +23,15 @@ from __future__ import annotations
 
 from torch import Tensor, nn
 
+from eden.impl.acceleration import (
+    replace_large_linears_with_fp8,
+    replace_self_attention_ops,
+)
 from flashdreams.recipes.wan.transformer.impl.modules import Block, BlockCache, Head
 from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetwork,
     WanDiTNetworkConfig,
 )
-
-from eden.impl.acceleration import replace_large_linears_with_fp8, replace_self_attention_ops
 
 
 def _layer_norm_fp32(norm: nn.Module, x: Tensor) -> Tensor:
@@ -76,9 +78,13 @@ class FP32AdaLNBlock(Block):
             "We expect to have called update_parameters_after_loading_checkpoint() "
             "before running the forward pass"
         )
-        e_chunks = [c.squeeze(-2) for c in (self.modulation + e.float()).chunk(6, dim=-2)]
+        e_chunks = [
+            c.squeeze(-2) for c in (self.modulation + e.float()).chunk(6, dim=-2)
+        ]
 
-        y = (_layer_norm_fp32(self.norm1, x) * (1 + e_chunks[1]) + e_chunks[0]).type_as(x)
+        y = (_layer_norm_fp32(self.norm1, x) * (1 + e_chunks[1]) + e_chunks[0]).type_as(
+            x
+        )
         y = self.self_attn(y, rope_freqs=rope_freqs, kv_cache=cache.self_attn)
         x = (x.float() + y * e_chunks[2]).type_as(x)
 
@@ -86,7 +92,9 @@ class FP32AdaLNBlock(Block):
             _layer_norm_fp32(self.norm3, x).type_as(x),
             kv_cache=cache.cross_attn,
         )
-        y = (_layer_norm_fp32(self.norm2, x) * (1 + e_chunks[4]) + e_chunks[3]).type_as(x)
+        y = (_layer_norm_fp32(self.norm2, x) * (1 + e_chunks[4]) + e_chunks[3]).type_as(
+            x
+        )
         y = self.ffn(y)
         x = (x.float() + y.float() * e_chunks[5]).type_as(x)
         return x

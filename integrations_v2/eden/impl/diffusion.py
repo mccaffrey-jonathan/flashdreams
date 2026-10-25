@@ -106,12 +106,17 @@ class EdenDiffusionModel(DiffusionModel):
 
     @staticmethod
     def _distributed() -> bool:
-        return torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1
+        return (
+            torch.distributed.is_initialized()
+            and torch.distributed.get_world_size() > 1
+        )
 
     def _full_shape(self, like: Tensor) -> tuple[int, ...]:
         """The unpatchified ``(..., T, C, H, W)`` shape behind patchified ``like``."""
         return tuple(
-            self.transformer.unpatchify_and_maybe_gather_cp(torch.empty_like(like)).shape
+            self.transformer.unpatchify_and_maybe_gather_cp(
+                torch.empty_like(like)
+            ).shape
         )
 
     def _broadcast_and_shard(self, full: Tensor) -> Tensor:
@@ -127,9 +132,16 @@ class EdenDiffusionModel(DiffusionModel):
         """
         full_shape = self._full_shape(like)
         if not self._distributed() or torch.distributed.get_rank() == 0:
-            shape_cthw = (*full_shape[:-4], full_shape[-3], full_shape[-4], *full_shape[-2:])
+            shape_cthw = (
+                *full_shape[:-4],
+                full_shape[-3],
+                full_shape[-4],
+                *full_shape[-2:],
+            )
             full = (
-                torch.randn(shape_cthw, device=like.device, dtype=like.dtype, generator=self.rng)
+                torch.randn(
+                    shape_cthw, device=like.device, dtype=like.dtype, generator=self.rng
+                )
                 .movedim(-3, -4)
                 .contiguous()
             )
@@ -223,7 +235,9 @@ class EdenDiffusionModel(DiffusionModel):
             cache=cache,
             input=input,
         )
-        return self.transformer.unpatchify_and_maybe_gather_cp(clean_latent), final_state
+        return self.transformer.unpatchify_and_maybe_gather_cp(
+            clean_latent
+        ), final_state
 
     def finalize(self, final_state: DiffusionModel.FinalState) -> None:  # type: ignore[override]
         """Commit the clean latent to the AR cache at ``t = context_noise``.
@@ -233,7 +247,9 @@ class EdenDiffusionModel(DiffusionModel):
         """
         timestep_dtype_fn = getattr(self.scheduler, "network_timestep_dtype", None)
         timestep_dtype = (
-            timestep_dtype_fn(self.dtype) if timestep_dtype_fn is not None else self.dtype
+            timestep_dtype_fn(self.dtype)
+            if timestep_dtype_fn is not None
+            else self.dtype
         )
         context_noise = self.config.context_noise
         timestep = torch.tensor(context_noise, device=self.device, dtype=timestep_dtype)

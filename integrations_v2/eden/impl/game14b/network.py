@@ -25,13 +25,12 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
+from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
+from eden.impl.numerics import EdenWanDiTNetwork
 from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetwork14BConfig,
     WanDiTNetworkCache,
 )
-
-from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
-from eden.impl.numerics import EdenWanDiTNetwork
 
 # 16 noisy latent + 4 first-frame mask + 16 condition latent.
 GAME14B_I2V_CHANNELS = 16 + 4 + 16

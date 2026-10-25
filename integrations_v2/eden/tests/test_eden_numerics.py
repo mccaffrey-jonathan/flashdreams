@@ -10,12 +10,11 @@ import copy
 import pytest
 import torch
 import torch.nn.functional as F
+from eden.impl.numerics import EdenWanDiTNetwork, FP32AdaLNBlock, FP32AdaLNHead
+from eden.impl.scheduler import EdenFlowMatchScheduler, EdenFlowMatchSchedulerConfig
 from torch import nn
 
 from flashdreams.recipes.wan.transformer.impl.modules import Block, Head
-
-from eden.impl.numerics import EdenWanDiTNetwork, FP32AdaLNBlock, FP32AdaLNHead
-from eden.impl.scheduler import EdenFlowMatchScheduler, EdenFlowMatchSchedulerConfig
 
 pytestmark = pytest.mark.ci_cpu
 
@@ -98,7 +97,9 @@ class _SDPA(nn.Module):
         del cp_group
 
     def forward(self, q, k, v):
-        out = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        )
         return out.transpose(1, 2)
 
 
@@ -164,8 +165,15 @@ def _tiny_network(**flags) -> EdenWanDiTNetwork:
     from eden.impl.game5b.network import Game5BDiTNetworkConfig
 
     config = Game5BDiTNetworkConfig(
-        num_layers=2, dim=64, ffn_dim=128, num_heads=2, text_dim=32, freq_dim=16,
-        control_dim=16, in_dim=48 + 16, **flags,
+        num_layers=2,
+        dim=64,
+        ffn_dim=128,
+        num_heads=2,
+        text_dim=32,
+        freq_dim=16,
+        control_dim=16,
+        in_dim=48 + 16,
+        **flags,
     )
     return config.setup()
 
@@ -174,7 +182,9 @@ def test_default_flags_build_the_stock_network() -> None:
     network = _tiny_network()
     assert all(type(block) is Block for block in network.blocks)
     assert type(network.head) is Head
-    assert type(network.blocks[0].self_attn.attn_op).__name__ == "ContextParallelAttention"
+    assert (
+        type(network.blocks[0].self_attn.attn_op).__name__ == "ContextParallelAttention"
+    )
 
 
 def test_fp32_adaln_flag_reclasses_blocks_and_head_only() -> None:

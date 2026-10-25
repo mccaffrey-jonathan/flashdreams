@@ -38,17 +38,16 @@ from dataclasses import dataclass, field
 import torch
 from loguru import logger
 
-from flashdreams.recipes.wan.transformer.wan21 import (
-    Wan21Transformer,
-    Wan21TransformerConfig,
-)
-
 # The payload is structurally identical to the 14B's, so it is shared rather
 # than redeclared; ``eden.impl.game14b`` hosts the proxy-DINO pieces both
 # models use (this one, the DINOv3 encoder and the overlapped control stream).
 from eden.impl.game14b.transformer import (
     I2VProxyDinoCtrl,
     commit_kv_cache_scalar_timestep,
+)
+from flashdreams.recipes.wan.transformer.wan21 import (
+    Wan21Transformer,
+    Wan21TransformerConfig,
 )
 
 from .checkpoint import load_game5b_dit_state_dict
@@ -81,7 +80,10 @@ class Game5BTransformer(Wan21Transformer):
     network: Game5BDiTNetwork
 
     def __init__(self, config: Game5BTransformerConfig) -> None:
-        if config.dcp_checkpoint_path is not None and config.checkpoint_path is not None:
+        if (
+            config.dcp_checkpoint_path is not None
+            and config.checkpoint_path is not None
+        ):
             raise ValueError(
                 "set either dcp_checkpoint_path or checkpoint_path, not both"
             )
@@ -108,9 +110,7 @@ class Game5BTransformer(Wan21Transformer):
             return network
         # The heaviest single step of startup: the whole 5B DiT off a network
         # filesystem.
-        logger.info(
-            "Loading Game2V 5B DiT weights from {}", config.dcp_checkpoint_path
-        )
+        logger.info("Loading Game2V 5B DiT weights from {}", config.dcp_checkpoint_path)
         load_started = time.perf_counter()
         state_dict = load_game5b_dit_state_dict(config.dcp_checkpoint_path)
         # The checkpoint stores fp32; the network runs at ``config.dtype``.
@@ -198,7 +198,6 @@ class Game5BTransformer(Wan21Transformer):
     ) -> None:
         """Commit the clean chunk with a scalar timestep, as the reference."""
         commit_kv_cache_scalar_timestep(self, noisy_latent, timestep, cache, input)
-
 
 
 __all__ = [

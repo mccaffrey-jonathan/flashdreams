@@ -78,7 +78,10 @@ class TaehvVAEWan22Decoder(TaehvVAEDecoder):
             use_compile=config.use_compile,
             state_dict_transform=config.state_dict_transform,
         ).to(dtype=config.dtype)
-        for name, values in (("mean", self._LIGHTTAE_MEAN), ("std", self._LIGHTTAE_STD)):
+        for name, values in (
+            ("mean", self._LIGHTTAE_MEAN),
+            ("std", self._LIGHTTAE_STD),
+        ):
             self.register_buffer(
                 name,
                 torch.tensor(values, dtype=config.dtype).view(1, 1, -1, 1, 1),

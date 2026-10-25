@@ -38,13 +38,12 @@ import torch
 from loguru import logger
 from torch import Tensor
 
+from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
 from flashdreams.recipes.wan.pipeline import (
     WanInferencePipeline,
     WanInferencePipelineCache,
     WanInferencePipelineConfig,
 )
-
-from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
 
 from .encoder import Game5BCtrlEncoderConfig, Game5BCtrlInput
 

@@ -41,7 +41,10 @@ class FP32RMSNorm(RMS_norm):
 
     def forward(self, x: Tensor) -> Tensor:
         dim = 1 if self.channel_first else -1
-        return F.normalize(x.float(), dim=dim).to(x.dtype) * self.scale * self.gamma + self.bias
+        return (
+            F.normalize(x.float(), dim=dim).to(x.dtype) * self.scale * self.gamma
+            + self.bias
+        )
 
 
 @dataclass(kw_only=True)
@@ -63,9 +66,9 @@ class EdenWanVAEEncoder(WanVAEEncoder):
                 module.__class__ = FP32RMSNorm
         # Assigning to a registered buffer name updates the buffer, so it still
         # follows ``.to(device)``.
-        self.vae.inv_std = (1.0 / torch.tensor(config.latent_std, dtype=config.dtype)).view(
-            1, config.z_dim, 1, 1, 1
-        )
+        self.vae.inv_std = (
+            1.0 / torch.tensor(config.latent_std, dtype=config.dtype)
+        ).view(1, config.z_dim, 1, 1, 1)
 
     @torch.no_grad()
     def forward(
@@ -78,7 +81,9 @@ class EdenWanVAEEncoder(WanVAEEncoder):
             cache = self.initialize_autoregressive_cache()
         assert input.ndim >= 4, "Expected input to have shape [..., T, C, H, W]"
         *batch_shape, T, C, H, W = input.shape
-        x = input.reshape(math.prod(batch_shape), T, C, H, W).to(dtype=self.config.dtype)
+        x = input.reshape(math.prod(batch_shape), T, C, H, W).to(
+            dtype=self.config.dtype
+        )
         z = self.vae.encode(x.transpose(1, 2).contiguous(), cache=cache).transpose(1, 2)
         return z.reshape(*batch_shape, *z.shape[1:])
 

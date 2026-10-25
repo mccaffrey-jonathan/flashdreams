@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-
 from eden.impl.diffusion import EdenDiffusionModel
 
 pytestmark = pytest.mark.ci_cpu
