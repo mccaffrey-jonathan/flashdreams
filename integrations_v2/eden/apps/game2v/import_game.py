@@ -1,4 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """Register a GamePrototypeTurbo project as an Eden game.
 
 The skill (``skills/edengolem``) produces a standalone project: a
@@ -31,29 +35,31 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .game_renderer import STANDALONE_HOST
+from .game_renderer import STANDALONE_HOST, games_root
 
 THREE_VERSION = "0.161.0"
 """The one Three.js build every Eden game shares (``games/node_modules``)."""
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # Top-level names the renderer and the browser server already route.
-_RESERVED_SLUGS = frozenset({"host", "assets", "vendor", "bench", "shared", "node_modules"})
+_RESERVED_SLUGS = frozenset(
+    {"host", "assets", "vendor", "bench", "shared", "node_modules"}
+)
 # Per-run files that describe the skill's gates, not the game.
-_RUN_METADATA = frozenset({
-    "step1.json", "step2.json", "step3.json", "strategy.json",
-    "source-artifact.json", "scene-manifest.json",
-})
+_RUN_METADATA = frozenset(
+    {
+        "step1.json",
+        "step2.json",
+        "step3.json",
+        "strategy.json",
+        "source-artifact.json",
+        "scene-manifest.json",
+    }
+)
 
 
 class GameImportError(ValueError):
     """The project cannot be imported as given."""
-
-
-def games_root() -> Path:
-    return Path(
-        os.environ.get("EDEN_GAMES_ROOT", Path(__file__).resolve().parents[4] / "games")
-    ).resolve()
 
 
 def _read_json(path: Path) -> Any:
@@ -92,7 +98,9 @@ def accepted_run(project: Path, *, allow_incomplete: bool = False) -> Path:
             "or pass --allow-incomplete to import the latest run anyway."
         )
     if not run.is_relative_to(project) or not (run / "index.html").is_file():
-        raise GameImportError(f"Accepted run {run} is not a runnable directory inside {project}")
+        raise GameImportError(
+            f"Accepted run {run} is not a runnable directory inside {project}"
+        )
     return run
 
 
@@ -114,7 +122,9 @@ def _vendor(project: Path) -> dict[str, str]:
         )
     unknown = sorted(set(dependencies) - {"three", "@dimforge/rapier3d-compat"})
     if unknown:
-        raise GameImportError(f"Eden serves only three and rapier; the project also needs {unknown}")
+        raise GameImportError(
+            f"Eden serves only three and rapier; the project also needs {unknown}"
+        )
     return dependencies
 
 
@@ -145,7 +155,10 @@ def event_prompts_from_source(run: Path) -> dict[str, str]:
     """
     found: list[str] = []
     for path in sorted(run.rglob("*")):
-        if "evidence" in path.relative_to(run).parts or path.suffix not in {".js", ".mjs"}:
+        if "evidence" in path.relative_to(run).parts or path.suffix not in {
+            ".js",
+            ".mjs",
+        }:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -158,12 +171,15 @@ def event_prompts_from_source(run: Path) -> dict[str, str]:
             ternary = _EVENT_TERNARY.match(argument)
             if ternary:
                 candidates = [ternary.group(1), ternary.group(2)]
-            found.extend(candidate for candidate in candidates if _EVENT_TYPE.match(candidate))
-    return {event_type: _event_type_text(event_type) for event_type in sorted(set(found))}
+            found.extend(
+                candidate for candidate in candidates if _EVENT_TYPE.match(candidate)
+            )
+    return {
+        event_type: _event_type_text(event_type) for event_type in sorted(set(found))
+    }
 
 
 def _restart_keys(run: Path) -> list[str]:
-
     """Keys the game's own strategy uses to restart, so overlay clicks can press them."""
     path = run / "strategy.json"
     if not path.is_file():
@@ -171,7 +187,9 @@ def _restart_keys(run: Path) -> list[str]:
     keys = [
         str(action["key"]).lower()
         for action in _read_json(path).get("restart_actions") or ()
-        if isinstance(action, dict) and action.get("type") == "tap" and action.get("key")
+        if isinstance(action, dict)
+        and action.get("type") == "tap"
+        and action.get("key")
     ]
     return keys or ["r"]
 
@@ -180,8 +198,14 @@ def _copy_game(project: Path, run: Path, destination: Path) -> None:
     for path in sorted(run.rglob("*")):
         relative = path.relative_to(run)
         if path.is_symlink():
-            raise GameImportError(f"Run contains a symlink, which is not copied: {path}")
-        if not path.is_file() or "evidence" in relative.parts or path.name in _RUN_METADATA:
+            raise GameImportError(
+                f"Run contains a symlink, which is not copied: {path}"
+            )
+        if (
+            not path.is_file()
+            or "evidence" in relative.parts
+            or path.name in _RUN_METADATA
+        ):
             continue
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -211,8 +235,7 @@ def write_overlay(destination: Path, title: str) -> None:
         "// SPDX-License-Identifier: Apache-2.0\n"
         # REUSE-IgnoreEnd
         "// Generated by eden.apps.game2v.import_game for a standalone game.\n"
-        f"const TITLE = {json.dumps(title, ensure_ascii=False)};\n"
-        + _OVERLAY_JS,
+        f"const TITLE = {json.dumps(title, ensure_ascii=False)};\n" + _OVERLAY_JS,
         encoding="utf-8",
     )
     (hud / "overlay.css").write_text(_OVERLAY_CSS, encoding="utf-8")
@@ -292,14 +315,20 @@ def registry_entry(
         "controls": [str(line) for line in meta.get("controls") or ()],
         "modules": [str(module) for module in meta.get("modules") or ()],
         "restart_keys": _restart_keys(run),
-        "event_prompts": dict(event_prompts if event_prompts is not None else event_prompts_from_source(run)),
+        "event_prompts": dict(
+            event_prompts
+            if event_prompts is not None
+            else event_prompts_from_source(run)
+        ),
         "source": {"skill": "edengolem", "run": run.relative_to(project).as_posix()},
     }
 
 
 def _write_registry(root: Path, registry: Mapping[str, Any]) -> None:
     text = json.dumps(registry, indent=2, ensure_ascii=False) + "\n"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, delete=False, suffix=".json") as handle:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=root, delete=False, suffix=".json"
+    ) as handle:
         handle.write(text)
     os.replace(handle.name, root / "registry.json")
 
@@ -316,7 +345,10 @@ def capture_cover(slug: str, path: Path, root: Path) -> None:
         chunk = worker.capture(GameTimeline(slug).begin_chunk(1, 16))
     finally:
         worker.close()
-    Image.fromarray(chunk.frames[0].ui_frame).save(path)
+    frame = chunk.frames[0].ui_frame
+    if frame is None:
+        raise GameImportError(f"{slug}: the capture returned no frame for the cover.")
+    Image.fromarray(frame).save(path)
 
 
 def import_game(
@@ -342,28 +374,42 @@ def import_game(
     project = project.resolve()
     root = (root or games_root()).resolve()
     if not _SLUG.fullmatch(slug) or slug in _RESERVED_SLUGS:
-        raise GameImportError(f"Slug must be lowercase words joined by '-', not a reserved name: {slug!r}")
+        raise GameImportError(
+            f"Slug must be lowercase words joined by '-', not a reserved name: {slug!r}"
+        )
     if cover is not None and not cover.is_file():
         raise GameImportError(f"Cover image {cover} does not exist")
     registry_path = root / "registry.json"
-    original_registry = registry_path.read_text(encoding="utf-8") if registry_path.is_file() else None
+    original_registry = (
+        registry_path.read_text(encoding="utf-8") if registry_path.is_file() else None
+    )
     registry = json.loads(original_registry) if original_registry else {"games": []}
     existing = [game for game in registry["games"] if game.get("slug") == slug]
     destination = root / slug
     if (existing or destination.exists()) and not replace:
-        raise GameImportError(f"Game {slug!r} already exists in {root}; pass --replace to overwrite it")
+        raise GameImportError(
+            f"Game {slug!r} already exists in {root}; pass --replace to overwrite it"
+        )
     if existing and existing[0].get("host") != STANDALONE_HOST:
-        raise GameImportError(f"{slug!r} is a hand-ported game, not an import; refusing to replace it")
+        raise GameImportError(
+            f"{slug!r} is a hand-ported game, not an import; refusing to replace it"
+        )
 
     if run is None:
         run = accepted_run(project, allow_incomplete=allow_incomplete)
     else:
         run = run.resolve()
         if not run.is_relative_to(project) or not (run / "index.html").is_file():
-            raise GameImportError(f"Run {run} is not a runnable directory inside {project}")
+            raise GameImportError(
+                f"Run {run} is not a runnable directory inside {project}"
+            )
     entry = registry_entry(
-        project, run, slug,
-        prompt=prompt, cover_prompt=cover_prompt, event_prompts=event_prompts,
+        project,
+        run,
+        slug,
+        prompt=prompt,
+        cover_prompt=cover_prompt,
+        event_prompts=event_prompts,
     )
 
     staging = Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=root))
@@ -380,7 +426,9 @@ def import_game(
             moved_aside = True
         staging.rename(destination)
         installed = True
-        registry["games"] = [game for game in registry["games"] if game.get("slug") != slug] + [entry]
+        registry["games"] = [
+            game for game in registry["games"] if game.get("slug") != slug
+        ] + [entry]
         _write_registry(root, registry)
         if cover is None:
             capture(slug, destination / "cover.png", root)
@@ -405,18 +453,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m eden.apps.game2v.import_game",
         description="Register a GamePrototypeTurbo project as an Eden game.",
     )
-    parser.add_argument("project", type=Path, help="Skill output directory (holds .state.json).")
-    parser.add_argument("--slug", required=True, help="Registry slug, e.g. star-course.")
-    parser.add_argument("--games-root", type=Path, default=None, help="Defaults to EDEN_GAMES_ROOT or games/.")
-    parser.add_argument("--cover", type=Path, default=None,
-                        help="First-frame image. Without it the game's own first frame is captured.")
-    parser.add_argument("--prompt", default=None, help="Static scene prompt. Defaults to the brief's scene.description.")
-    parser.add_argument("--cover-prompt", default=None, help="Description of the cover. Defaults to the prompt.")
-    parser.add_argument("--event-prompts", type=Path, default=None,
-                        help="JSON object mapping game event types to prompt sentences.")
-    parser.add_argument("--allow-incomplete", action="store_true",
-                        help="Import the latest run even if acceptance has not passed.")
-    parser.add_argument("--replace", action="store_true", help="Overwrite an earlier import of this slug.")
+    parser.add_argument(
+        "project", type=Path, help="Skill output directory (holds .state.json)."
+    )
+    parser.add_argument(
+        "--slug", required=True, help="Registry slug, e.g. star-course."
+    )
+    parser.add_argument(
+        "--games-root",
+        type=Path,
+        default=None,
+        help="Defaults to EDEN_GAMES_ROOT or games/.",
+    )
+    parser.add_argument(
+        "--cover",
+        type=Path,
+        default=None,
+        help="First-frame image. Without it the game's own first frame is captured.",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Static scene prompt. Defaults to the brief's scene.description.",
+    )
+    parser.add_argument(
+        "--cover-prompt",
+        default=None,
+        help="Description of the cover. Defaults to the prompt.",
+    )
+    parser.add_argument(
+        "--event-prompts",
+        type=Path,
+        default=None,
+        help="JSON object mapping game event types to prompt sentences.",
+    )
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Import the latest run even if acceptance has not passed.",
+    )
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Overwrite an earlier import of this slug.",
+    )
     args = parser.parse_args(argv)
     event_prompts = None
     if args.event_prompts is not None:
@@ -427,15 +507,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--event-prompts must be a JSON object of strings")
     try:
         entry = import_game(
-            args.project, args.slug,
-            root=args.games_root, cover=args.cover, prompt=args.prompt,
-            cover_prompt=args.cover_prompt, event_prompts=event_prompts,
-            allow_incomplete=args.allow_incomplete, replace=args.replace,
+            args.project,
+            args.slug,
+            root=args.games_root,
+            cover=args.cover,
+            prompt=args.prompt,
+            cover_prompt=args.cover_prompt,
+            event_prompts=event_prompts,
+            allow_incomplete=args.allow_incomplete,
+            replace=args.replace,
         )
     except GameImportError as error:
         parser.exit(2, f"error: {error}\n")
-    print(f"Registered {entry['slug']!r} from {entry['source']['run']}. "
-          f"Run it with EDEN_GAME={entry['slug']} bash start.sh <model>.")
+    print(
+        f"Registered {entry['slug']!r} from {entry['source']['run']}. "
+        f"Run it with EDEN_GAME={entry['slug']} bash start.sh <model>."
+    )
     return 0
 
 

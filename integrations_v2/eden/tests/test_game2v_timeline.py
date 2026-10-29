@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 import base64
 import json
@@ -7,12 +9,12 @@ import threading
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
-from PIL import Image
-
 from eden.apps.game2v import game_renderer
+from eden.apps.game2v.game_hud import envelope
 from eden.apps.game2v.game_renderer import (
     DEFAULT_CAPTURE_HEIGHT,
     DEFAULT_CAPTURE_WIDTH,
@@ -22,10 +24,8 @@ from eden.apps.game2v.game_renderer import (
     _expand_captured_frames,
     _sleep_until_frame_deadline,
 )
-from eden.apps.game2v.game_hud import envelope
 from eden.apps.game2v.game_timeline import GameTimeline
 from eden.apps.game2v.session import (
-    GAME_EVENT_READER_ID,
     Game2VModelState,
     _begin_game_chunk,
     _collect_game_chunk,
@@ -34,6 +34,7 @@ from eden.apps.game2v.session import (
     _game_input_payloads,
     _pace_duration_s,
 )
+from PIL import Image
 
 pytestmark = pytest.mark.ci_cpu
 
@@ -41,16 +42,17 @@ pytestmark = pytest.mark.ci_cpu
 def test_captured_ticks_follow_model_fps_not_a_fixed_24():
     """Sim stays 60 Hz; captured-frame spacing is the model's fps."""
     for fps, expected_end in ((16, 45), (24, 30), (8, 90)):
-        timeline = GameTimeline('freeze')
+        timeline = GameTimeline("freeze")
         chunk = timeline.begin_chunk(12, fps)
         assert chunk.simulation_tick_end == expected_end
         ticks = [frame.simulation_tick for frame in chunk.frames]
-        assert ticks == [
-            round((index + 1) / fps * 60) for index in range(12)
-        ]
+        assert ticks == [round((index + 1) / fps * 60) for index in range(12)]
         # Capture dt in the page is (tick - previous) / 60, so a 16 fps model
         # gets ~1/16 s of visual interpolation, not a hardcoded 1/24.
-        deltas = [ticks[0], *(later - earlier for earlier, later in zip(ticks, ticks[1:]))]
+        deltas = [
+            ticks[0],
+            *(later - earlier for earlier, later in zip(ticks, ticks[1:])),
+        ]
         assert sum(deltas) == expected_end
         assert sum(deltas) / len(deltas) == pytest.approx(60 / fps)
 
@@ -63,23 +65,37 @@ def test_condition_samples_align_with_latent_stride():
     divisible by the stride, so a global counter would shift the phase by one
     frame every chunk and a restarted rollout would open a frame short.
     """
-    timeline = GameTimeline('freeze')
+    timeline = GameTimeline("freeze")
     first = timeline.begin_chunk(9, 16)
     second = timeline.begin_chunk(12, 16)
 
-    assert [frame.game_frame_id for frame in first.frames if frame.capture_condition] == [1, 5, 9]
-    assert [frame.game_frame_id for frame in second.frames if frame.capture_condition] == [10, 14, 18]
+    assert [
+        frame.game_frame_id for frame in first.frames if frame.capture_condition
+    ] == [1, 5, 9]
+    assert [
+        frame.game_frame_id for frame in second.frames if frame.capture_condition
+    ] == [10, 14, 18]
     assert [frame.capture_condition for frame in first.frames] == [
-        True, False, False, False, True, False, False, False, True,
+        True,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        True,
     ]
 
 
 def test_condition_stride_survives_reset():
-    timeline = GameTimeline('freeze', condition_stride=4)
+    timeline = GameTimeline("freeze", condition_stride=4)
     timeline.begin_chunk(12, 24)
     timeline.reset()
     chunk = timeline.begin_chunk(12, 24)
-    assert [frame.game_frame_id for frame in chunk.frames if frame.capture_condition] == [1, 5, 9]
+    assert [
+        frame.game_frame_id for frame in chunk.frames if frame.capture_condition
+    ] == [1, 5, 9]
 
 
 def test_restarted_rollout_keeps_a_full_condition_set():
@@ -89,140 +105,158 @@ def test_restarted_rollout_keeps_a_full_condition_set():
     9-frame causal one. Its condition frames must still be three, exactly as
     the first round's were, even though the timeline was not reset.
     """
-    timeline = GameTimeline('freeze')
+    timeline = GameTimeline("freeze")
     for index in range(14):
         timeline.begin_chunk(9 if index == 0 else 12, 16)
     # The in-flight successor is discarded on restart, then the round reopens.
     reopened = timeline.begin_chunk(9, 16)
     assert [frame.capture_condition for frame in reopened.frames] == [
-        True, False, False, False, True, False, False, False, True,
+        True,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        True,
     ]
 
 
 def test_decode_data_url_returns_rgb():
-    rgb = _decode_data_url(_jpeg_data_url(np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)))
+    rgb = _decode_data_url(
+        _jpeg_data_url(np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8))
+    )
     assert rgb.shape == (1, 2, 3)
     assert rgb.dtype == np.uint8
 
 
 def test_capture_request_renders_every_frame():
-    timeline = GameTimeline('freeze')
+    timeline = GameTimeline("freeze")
     chunk = timeline.begin_chunk(8, 16)
     request = _chunk_capture_request(chunk)
-    assert request['events'] == []
-    assert [frame['targetTick'] for frame in request['frames']] == [
+    assert request["events"] == []
+    assert [frame["targetTick"] for frame in request["frames"]] == [
         packet.simulation_tick for packet in chunk.frames
     ]
-    assert all('captureCondition' not in frame and 'captureStream' not in frame
-               for frame in request['frames'])
+    assert all(
+        "captureCondition" not in frame and "captureStream" not in frame
+        for frame in request["frames"]
+    )
 
 
 def test_expand_decodes_every_ui_frame_and_conditions_on_the_latent_subset():
-    timeline = GameTimeline('freeze')
+    timeline = GameTimeline("freeze")
     chunk = timeline.begin_chunk(9, 16)
     frames = _expand_captured_frames(chunk, _stub_capture(chunk))
-    assert [frame.ui_frame[0, 0, 0] for frame in frames] == [10, 20, 30, 40, 50, 60, 70, 80, 90]
-    assert [index for index, frame in enumerate(frames) if frame.condition_frame is not None] == [0, 4, 8]
+    assert [np.asarray(frame.ui_frame)[0, 0, 0] for frame in frames] == [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90,
+    ]
+    assert [
+        index for index, frame in enumerate(frames) if frame.condition_frame is not None
+    ] == [0, 4, 8]
     assert all(
         frame.condition_frame is frame.ui_frame
         for frame in frames
         if frame.capture_condition
     )
-    assert [frame.ui_state for frame in frames] == [{'moves': index} for index in range(9)]
+    assert [frame.ui_state for frame in frames] == [
+        {"moves": index} for index in range(9)
+    ]
 
 
 def test_expand_rejects_frame_count_mismatch():
-    timeline = GameTimeline('freeze')
+    timeline = GameTimeline("freeze")
     chunk = timeline.begin_chunk(4, 16)
-    with pytest.raises(RuntimeError, match='3 frames'):
+    with pytest.raises(RuntimeError, match="3 frames"):
         _expand_captured_frames(chunk, _stub_capture(chunk)[:3])
 
 
 def test_hud_envelope_forwards_state_verbatim():
-    payload = envelope('freeze', 12, {'moves': 3, 'helpOpen': True})
+    payload = envelope("freeze", 12, {"moves": 3, "helpOpen": True})
     assert payload == {
-        'type': 'game_ui',
-        'slug': 'freeze',
-        'frame_id': 12,
-        'state': {'moves': 3, 'helpOpen': True},
+        "type": "game_ui",
+        "slug": "freeze",
+        "frame_id": 12,
+        "state": {"moves": 3, "helpOpen": True},
     }
-    assert envelope('tracer', 1, None)['state'] is None
+    assert envelope("tracer", 1, None)["state"] is None
 
 
-def test_game_input_payloads_pulse_overlay_actions():
+def _key(key, pressed, timestamp=1):
     from numpy import uint64
 
     from flashdreams.runtime_v2.user_input_event import (
-        ClientActionUserInputEvent,
         KeyboardInputState,
         KeyboardUserInputEvent,
     )
+
+    return KeyboardUserInputEvent(
+        timestamp=uint64(timestamp),
+        key=key,
+        state=KeyboardInputState.PRESSED if pressed else KeyboardInputState.RELEASED,
+    )
+
+
+def test_game_input_payloads_lowercase_keyboard_edges_only():
+    from numpy import uint64
+
+    from flashdreams.runtime_v2.user_input_event import FocusUserInputEvent
     from flashdreams.runtime_v2.user_input_events import UserInputEvents
 
     payloads = _game_input_payloads(
         UserInputEvents(
             [
-                KeyboardUserInputEvent(
-                    timestamp=uint64(1),
-                    key='W',
-                    state=KeyboardInputState.PRESSED,
-                ),
-                KeyboardUserInputEvent(
-                    timestamp=uint64(2),
-                    key='w',
-                    state=KeyboardInputState.RELEASED,
-                ),
-                ClientActionUserInputEvent(
-                    timestamp=uint64(3),
-                    action='undo',
-                    channel='game_ui',
-                ),
-                ClientActionUserInputEvent(
-                    timestamp=uint64(4),
-                    action='ignored',
-                    channel='other',
-                ),
+                _key("W", True, 1),
+                FocusUserInputEvent(timestamp=uint64(2), focused=False),
+                _key("ArrowLeft", False, 3),
             ]
         ),
     )
     assert payloads == [
-        {'action': 'w', 'phase': 'down'},
-        {'action': 'w', 'phase': 'up'},
-        {'action': 'undo', 'phase': 'down'},
-        {'action': 'undo', 'phase': 'up'},
+        {"action": "w", "phase": "down"},
+        {"action": "arrowleft", "phase": "up"},
     ]
 
 
-def test_live_game_reader_does_not_steal_model_events():
-    from numpy import uint64
+def test_ui_loop_forwards_keys_to_the_capture_worker_without_the_model_reader():
+    """Keys reach the in-flight render through the UI loop, between model steps."""
+    import queue
+
+    from eden.apps.game2v.game_ui import Game2VUILoop
 
     from flashdreams.runtime_v2.event_buffer import EventBuffer
-    from flashdreams.runtime_v2.user_input_event import (
-        KeyboardInputState,
-        KeyboardUserInputEvent,
-    )
     from flashdreams.runtime_v2.user_input_events import UserInputEvents
 
+    live_input = queue.SimpleQueue()
+    loop: Any = Game2VUILoop(live_input=live_input)
+    loop._initialize_loop_state()
+    loop.presented_model_frames = lambda: ()
+    type(loop).presented_model_frame_count = property(lambda self: 0)
     buffer = EventBuffer()
+    buffer.register(0)
     buffer.register(1)
-    buffer.register(GAME_EVENT_READER_ID)
-    buffer.append(
-        UserInputEvents(
-            [
-                KeyboardUserInputEvent(
-                    timestamp=uint64(1),
-                    key='a',
-                    state=KeyboardInputState.PRESSED,
-                )
-            ]
-        )
-    )
+    buffer.append(UserInputEvents([_key("a", True)]))
+    ui_events, _ = buffer.read(0)
+    try:
+        assert loop.step(0, ui_events) == []
+    finally:
+        del type(loop).presented_model_frame_count
     state = Game2VModelState.__new__(Game2VModelState)
-    state.event_buffer = buffer
-    assert _drain_live_game_events(state) == [{'action': 'a', 'phase': 'down'}]
+    state.live_input = live_input
+    assert _drain_live_game_events(state) == [{"action": "a", "phase": "down"}]
     assert _drain_live_game_events(state) == []
+    # The model loop still sees the same key at its own step boundary.
     model_events, _ = buffer.read(1)
-    assert [event.key for event in model_events.get_events()] == ['a']
+    assert [cast(Any, event).key for event in model_events.get_events()] == ["a"]
 
 
 def test_sleep_until_frame_deadline_paces_evenly_and_skips_when_behind():
@@ -295,8 +329,8 @@ def _stub_capture(chunk) -> list[dict]:
     """Mimic the capture page: an image and HUD snapshot on every model frame."""
     return [
         {
-            'ui': _jpeg_data_url(np.full((2, 2, 3), 10 * (index + 1), dtype=np.uint8)),
-            'state': {'moves': index},
+            "ui": _jpeg_data_url(np.full((2, 2, 3), 10 * (index + 1), dtype=np.uint8)),
+            "state": {"moves": index},
         }
         for index, _packet in enumerate(chunk.frames)
     ]
@@ -314,7 +348,7 @@ def test_default_capture_size_matches_model_frame_size():
 class _StubRenderer:
     """Record the thread each browser call lands on and block until released."""
 
-    instances: list['_StubRenderer'] = []
+    instances: list["_StubRenderer"] = []
 
     def __init__(self, slug, *, width, height):
         self.slug = slug
@@ -322,7 +356,9 @@ class _StubRenderer:
         self.height = height
         self.last_evaluate_s = 0.25
         self.last_decode_s = 0.05
-        self.webgl_renderer = 'ANGLE (NVIDIA Corporation, NVIDIA L20Z/PCIe/SSE2, OpenGL ES 3.2)'
+        self.webgl_renderer = (
+            "ANGLE (NVIDIA Corporation, NVIDIA L20Z/PCIe/SSE2, OpenGL ES 3.2)"
+        )
         self.closed = False
         self.threads: list[str] = [threading.current_thread().name]
         self.release = threading.Event()
@@ -354,14 +390,14 @@ class _StubRenderer:
 @pytest.fixture
 def stub_renderer(monkeypatch):
     _StubRenderer.instances.clear()
-    monkeypatch.setattr(game_renderer, 'GameRenderer', _StubRenderer)
+    monkeypatch.setattr(game_renderer, "GameRenderer", _StubRenderer)
     yield _StubRenderer
     _StubRenderer.instances.clear()
 
 
 def test_capture_worker_runs_on_its_own_thread_and_capture_waits(stub_renderer):
-    timeline = GameTimeline('freeze')
-    worker = GameCaptureWorker('freeze', width=832, height=480)
+    timeline = GameTimeline("freeze")
+    worker = GameCaptureWorker("freeze", width=832, height=480)
     try:
         pending = worker.submit(timeline.begin_chunk(12, 16))
         renderer = _wait_for_renderer(stub_renderer)
@@ -373,40 +409,44 @@ def test_capture_worker_runs_on_its_own_thread_and_capture_waits(stub_renderer):
         assert len(chunk.frames) == 12
         assert worker.last_evaluate_s == pytest.approx(0.25)
         assert worker.last_decode_s == pytest.approx(0.05)
-        assert 'NVIDIA' in worker.webgl_renderer
+        assert "NVIDIA" in worker.webgl_renderer
         assert renderer.width == 832 and renderer.height == 480
-        worker_threads = {name for name in renderer.threads if name != threading.current_thread().name}
-        assert worker_threads and all(name.startswith('game2v-render') for name in worker_threads)
+        worker_threads = {
+            name for name in renderer.threads if name != threading.current_thread().name
+        }
+        assert worker_threads and all(
+            name.startswith("game2v-render") for name in worker_threads
+        )
         assert threading.current_thread().name not in renderer.threads
 
         blocking = threading.Event()
         captured = {}
 
         def _capture_next():
-            captured['chunk'] = worker.capture(timeline.begin_chunk(12, 16))
+            captured["chunk"] = worker.capture(timeline.begin_chunk(12, 16))
             blocking.set()
 
         thread = threading.Thread(target=_capture_next)
         thread.start()
         if not renderer.started.wait(timeout=5):
-            raise AssertionError('capture() never reached the browser thread')
+            raise AssertionError("capture() never reached the browser thread")
         assert not blocking.is_set()
         renderer.release.set()
         thread.join(timeout=5)
         assert blocking.is_set()
-        assert len(captured['chunk'].frames) == 12
+        assert len(captured["chunk"].frames) == 12
         assert renderer.renders == 2
     finally:
         for instance in stub_renderer.instances:
             instance.release.set()
         worker.close()
     assert renderer.closed
-    assert renderer.threads[-1].startswith('game2v-render')
+    assert renderer.threads[-1].startswith("game2v-render")
 
 
 def test_one_worker_overlaps_successive_chunks(stub_renderer):
-    timeline = GameTimeline('freeze')
-    worker = GameCaptureWorker('freeze')
+    timeline = GameTimeline("freeze")
+    worker = GameCaptureWorker("freeze")
     try:
         first = worker.submit(timeline.begin_chunk(12, 16))
         renderer = _wait_for_renderer(stub_renderer)
@@ -418,7 +458,7 @@ def test_one_worker_overlaps_successive_chunks(stub_renderer):
         renderer.release.set()
         first.result(timeout=5)
         if not renderer.started.wait(timeout=5):
-            raise AssertionError('second chunk never reached the browser thread')
+            raise AssertionError("second chunk never reached the browser thread")
         renderer.release.set()
         second.result(timeout=5)
         assert renderer.renders == 2
@@ -430,8 +470,8 @@ def test_one_worker_overlaps_successive_chunks(stub_renderer):
 
 
 def test_capture_worker_keeps_one_browser_across_chunks(stub_renderer):
-    timeline = GameTimeline('freeze')
-    worker = GameCaptureWorker('freeze')
+    timeline = GameTimeline("freeze")
+    worker = GameCaptureWorker("freeze")
     try:
         for _ in range(3):
             pending = worker.submit(timeline.begin_chunk(12, 16))
@@ -458,42 +498,64 @@ class _GpuOptions:
             self._vendor_dir.cleanup()
 
 
-def test_gpu_launch_options_register_nvidia_egl_and_keep_mesa_fallback(monkeypatch, tmp_path):
-    monkeypatch.delenv('EDEN_GAME_GPU', raising=False)
-    mesa = tmp_path / '50_mesa.json'
-    mesa.write_text('{}')
-    monkeypatch.setattr(game_renderer, '_MESA_EGL_VENDOR', mesa)
+def test_gpu_launch_options_register_nvidia_egl_and_keep_mesa_fallback(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.setattr(game_renderer.sys, "platform", "linux")
+    mesa = tmp_path / "50_mesa.json"
+    mesa.write_text("{}")
+    monkeypatch.setattr(game_renderer, "_MESA_EGL_VENDOR", mesa)
     holder = _GpuOptions()
     try:
         options = holder.options()
-        assert options['args'] == list(game_renderer._GPU_LAUNCH_ARGS)
-        names = options['env']['__EGL_VENDOR_LIBRARY_FILENAMES'].split(':')
+        assert options["args"] == list(game_renderer._GPU_LAUNCH_ARGS)
+        assert holder._vendor_dir is not None
+        vendor_path = Path(holder._vendor_dir.name) / "10_nvidia.json"
         # The variable replaces the vendor list, so Mesa must be named to remain
         # a fallback, and NVIDIA must come first to win when it works.
-        assert len(names) == 2 and names[1] == str(mesa)
-        vendor = json.loads(Path(names[0]).read_text())
-        assert vendor['ICD']['library_path'] == 'libEGL_nvidia.so.0'
+        assert (
+            options["env"]["__EGL_VENDOR_LIBRARY_FILENAMES"] == f"{vendor_path}:{mesa}"
+        )
+        vendor = json.loads(vendor_path.read_text())
+        assert vendor["ICD"]["library_path"] == "libEGL_nvidia.so.0"
     finally:
         holder.cleanup()
 
 
 def test_gpu_launch_options_omit_mesa_when_absent(monkeypatch, tmp_path):
-    monkeypatch.delenv('EDEN_GAME_GPU', raising=False)
-    monkeypatch.setattr(game_renderer, '_MESA_EGL_VENDOR', tmp_path / 'missing.json')
+    monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.setattr(game_renderer.sys, "platform", "linux")
+    monkeypatch.setattr(game_renderer, "_MESA_EGL_VENDOR", tmp_path / "missing.json")
     holder = _GpuOptions()
     try:
-        names = holder.options()['env']['__EGL_VENDOR_LIBRARY_FILENAMES']
-        assert ':' not in names
+        names = holder.options()["env"]["__EGL_VENDOR_LIBRARY_FILENAMES"]
+        assert holder._vendor_dir is not None
+        assert names == str(Path(holder._vendor_dir.name) / "10_nvidia.json")
         assert Path(names).is_file()
     finally:
         holder.cleanup()
 
 
-def test_gpu_launch_options_disabled_by_env(monkeypatch):
-    monkeypatch.setenv('EDEN_GAME_GPU', '0')
+def test_gpu_launch_options_use_angle_d3d11_on_windows(monkeypatch):
+    """Windows has no EGL: no vendor JSON, no GLVND environment, D3D11 ANGLE."""
+    monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.setattr(game_renderer.sys, "platform", "win32")
     holder = _GpuOptions()
     try:
-        assert holder.options() == {}
+        options = holder.options()
+        assert options == {"args": list(game_renderer._WINDOWS_GPU_LAUNCH_ARGS)}
+        assert "--use-angle=d3d11" in options["args"]
+        assert holder._vendor_dir is None
+    finally:
+        holder.cleanup()
+
+
+def test_gpu_launch_options_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("EDEN_GAME_GPU", "0")
+    holder = _GpuOptions()
+    try:
+        assert holder.options() == {"args": list(game_renderer._SOFTWARE_LAUNCH_ARGS)}
         assert holder._vendor_dir is None
     finally:
         holder.cleanup()
@@ -504,27 +566,32 @@ def _pipeline_state(monkeypatch, *, rank: str, frames_by_step: dict[int, int]):
 
     from flashdreams.runtime_v2.session_desc import SessionDesc
 
-    monkeypatch.setenv('RANK', rank)
+    monkeypatch.setenv("RANK", rank)
     config = SimpleNamespace(
-        game_slug='freeze',
+        game_slug="freeze",
         model_video_width=832,
         model_video_height=480,
+        proxy_video=None,
+        autopilot=None,
     )
     return Game2VModelState(
         pipeline=SimpleNamespace(
             get_num_output_frames=lambda step_index: frames_by_step[step_index],
         ),
         session_desc=SessionDesc(frames_per_second_for_step=16),
-        config=config,
-        keyboard_resampler=SimpleNamespace(
-            input_timeline=SimpleNamespace(),
-            keyboard_track=SimpleNamespace(),
+        config=cast(Any, config),
+        keyboard_resampler=cast(
+            Any,
+            SimpleNamespace(
+                input_timeline=SimpleNamespace(),
+                keyboard_track=SimpleNamespace(),
+            ),
         ),
     )
 
 
 def test_begin_game_chunk_submits_on_rank_zero(stub_renderer, monkeypatch):
-    state = _pipeline_state(monkeypatch, rank='0', frames_by_step={0: 9, 1: 12})
+    state = _pipeline_state(monkeypatch, rank="0", frames_by_step={0: 9, 1: 12})
     try:
         pending = _begin_game_chunk(state, 0)
         renderer = _wait_for_renderer(stub_renderer)
@@ -542,7 +609,7 @@ def test_begin_game_chunk_submits_on_rank_zero(stub_renderer, monkeypatch):
 
 
 def test_begin_game_chunk_skips_the_browser_off_rank_zero(stub_renderer, monkeypatch):
-    state = _pipeline_state(monkeypatch, rank='1', frames_by_step={0: 9})
+    state = _pipeline_state(monkeypatch, rank="1", frames_by_step={0: 9})
     chunk = _begin_game_chunk(state, 0)
     assert chunk.frames[0].ui_frame is None
     assert len(chunk.frames) == 9
@@ -551,18 +618,20 @@ def test_begin_game_chunk_skips_the_browser_off_rank_zero(stub_renderer, monkeyp
 
 
 def test_collect_game_chunk_returns_a_frozen_packet_off_rank_zero(monkeypatch):
-    state = _pipeline_state(monkeypatch, rank='1', frames_by_step={0: 9})
+    state = _pipeline_state(monkeypatch, rank="1", frames_by_step={0: 9})
     state.pending_game_chunk = _begin_game_chunk(state, 0)
     collected = _collect_game_chunk(state)
     assert collected.frames[0].ui_frame is None
     assert state.pending_game_chunk is None
-    with pytest.raises(RuntimeError, match='no pending game chunk'):
+    with pytest.raises(RuntimeError, match="no pending game chunk"):
         _collect_game_chunk(state)
 
 
-def test_step_pipeline_renders_the_successor_before_generate(stub_renderer, monkeypatch):
+def test_step_pipeline_renders_the_successor_before_generate(
+    stub_renderer, monkeypatch
+):
     """The next chunk is submitted before generate, so it overlaps the GPU."""
-    state = _pipeline_state(monkeypatch, rank='0', frames_by_step={0: 9, 1: 12})
+    state = _pipeline_state(monkeypatch, rank="0", frames_by_step={0: 9, 1: 12})
     try:
         state.pending_game_chunk = _begin_game_chunk(state, 0, duration_s=0.0)
         renderer = _wait_for_renderer(stub_renderer)
@@ -574,7 +643,7 @@ def test_step_pipeline_renders_the_successor_before_generate(stub_renderer, monk
         successor = _begin_game_chunk(state, 1, duration_s=_pace_duration_s(state, 1))
         assert not successor.done()
         if not renderer.started.wait(timeout=5):
-            raise AssertionError('successor chunk never reached the browser thread')
+            raise AssertionError("successor chunk never reached the browser thread")
         renderer.release.set()
         next_chunk = successor.result(timeout=5)
         assert len(next_chunk.frames) == 12
@@ -593,19 +662,25 @@ def _wait_for_renderer(stub_renderer: type[_StubRenderer]) -> _StubRenderer:
     return _wait_for_renderers(stub_renderer, 1)[-1]
 
 
-def _wait_for_renderers(stub_renderer: type[_StubRenderer], count: int) -> list[_StubRenderer]:
+def _wait_for_renderers(
+    stub_renderer: type[_StubRenderer], count: int
+) -> list[_StubRenderer]:
     deadline = threading.Event()
     for _ in range(500):
-        started = [instance for instance in stub_renderer.instances if instance.started.is_set()]
+        started = [
+            instance
+            for instance in stub_renderer.instances
+            if instance.started.is_set()
+        ]
         if len(started) >= count:
             return started
         deadline.wait(0.01)
     raise AssertionError(
-        f'Expected {count} capture workers to start; got {len(stub_renderer.instances)}'
+        f"Expected {count} capture workers to start; got {len(stub_renderer.instances)}"
     )
 
 
 def _jpeg_data_url(rgb: np.ndarray) -> str:
     buffer = BytesIO()
-    Image.fromarray(rgb).save(buffer, format='JPEG', quality=85)
-    return 'data:image/jpeg;base64,' + base64.b64encode(buffer.getvalue()).decode()
+    Image.fromarray(rgb).save(buffer, format="JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()

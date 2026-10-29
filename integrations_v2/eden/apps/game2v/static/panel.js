@@ -1,4 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 /**
  * Game2V generation panel. Lists registered games, previews one in an iframe,
  * imports a finished GamePrototypeTurbo project, and asks the next model step

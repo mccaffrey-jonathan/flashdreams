@@ -421,6 +421,18 @@ modification notices remain in the files. Model weights and the proxy games
 are obtained separately and are not included by this source attribution.
 
 --------------------------------------------------------------------------------
+LightX2V EdenLive recording reader
+--------------------------------------------------------------------------------
+
+Path:     integrations_v2/eden/apps/game2v/recording.py
+License:  Apache-2.0 (see LICENSES/Apache-2.0.txt)
+Upstream: https://github.com/ModelTC/LightX2V/blob/d2d7424219abdc01b5722e7768e584bc96a5b418/lightx2v/models/input_encoders/edenlive/recording.py
+
+The recorded-proxy frame selection (midpoint rule, 4n+1 length, centre-crop
+and bilinear resize) is adapted so a Game2V replay consumes the same pixels
+as the LightX2V EdenLive runner used by the ComfyUI reference.
+
+--------------------------------------------------------------------------------
 LingBot-World v1 camera helpers
 --------------------------------------------------------------------------------
 

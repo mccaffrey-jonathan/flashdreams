@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Integration-owned defaults and resolved inputs for camera-to-video apps."""
 
@@ -104,8 +106,8 @@ class Cam2VApplicationDefaults:
     fixed_camera: bool = True
     """Keep the initial camera pose while the game input is not connected."""
 
-    game_slug: str = "freeze"
-    """Vendored WebGameVault game used by the Game2V timeline."""
+    game_slug: str = ""
+    """Default ``--game``; empty selects the first game in ``registry.json``."""
 
     control_stream_factory: Callable[[Any, Any], Any] | None = None
     """Build the overlapped condition encoder for frame-conditioned models.

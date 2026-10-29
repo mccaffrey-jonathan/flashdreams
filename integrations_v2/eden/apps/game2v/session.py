@@ -1,23 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
+# capture worker through the UI loop, the proxy render is model channel 1),
+# replay of a recorded proxy video, proxy recording and a per-chunk log.
 
 """Model-generation loop and session shared by camera-to-video apps."""
 
 from __future__ import annotations
 
 import inspect
-import time
+import json
 import os
+import queue
 import threading
+import time
 from collections import deque
-from contextlib import nullcontext
-from concurrent.futures import Future
-import numpy as np
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from loguru import logger
 from torch.nn import functional as F
@@ -25,8 +33,6 @@ from torch.nn import functional as F
 from flashdreams.api_v2.loop import IModelLoop, invoke_async
 from flashdreams.api_v2.session import ISession
 from flashdreams.core.distributed import is_distributed_initialized
-from flashdreams.runtime_v2.distributed_sync import broadcast_step_gate
-from flashdreams.runtime_v2.event_buffer import EventBuffer
 from flashdreams.infra.postprocess import VideoPostprocessStream
 from flashdreams.infra.postprocess.base import from_bvtchw, to_bvtchw
 from flashdreams.infra.runner_io import ResizeInterpolation
@@ -36,35 +42,29 @@ from flashdreams.runtime_v2.presentation_manager import PresentationManager
 from flashdreams.runtime_v2.recent_frame_rate import RecentFrameRateTracker
 from flashdreams.runtime_v2.session_desc import PresentationMode, SessionDesc
 from flashdreams.runtime_v2.step_result import StepResult
-from flashdreams.runtime_v2.user_input_events import UserInputEvents
 from flashdreams.runtime_v2.user_input_event import (
-    ClientActionUserInputEvent,
     KeyboardInputState,
     KeyboardUserInputEvent,
 )
+from flashdreams.runtime_v2.user_input_events import UserInputEvents
 from flashdreams.runtime_v2.video_tensor import VideoTensorLayout
 
 from .controls import CameraPoseIntegrator, KeyboardResampler
-from .game_hud import GAME_UI_ACTION_CHANNEL, envelope, is_dialog_open
-from .game_timeline import GameChunkPacket, GameTimeline
-from .game_renderer import game_static_prompt
 from .defaults import Cam2VConditioning, Cam2VGenerateStep, generate_camera_step
+from .game_hud import (
+    GAME_UI_ACTION_CHANNEL,
+    GameUIActionEvent,
+    envelope,
+    is_dialog_open,
+)
+from .game_renderer import game_static_prompt
+from .game_timeline import GameChunkPacket, GameTimeline
 from .postprocess_comparison import compose_postprocess_comparison
 from .ui import (
     RECENT_MODEL_FPS_WINDOW_SECONDS,
-    Cam2VPostprocessComparisonSlangPyUILoop,
     Cam2VSlangPyUILoop,
-    Cam2VUIState,
     Cam2VUIStatus,
 )
-
-GAME_EVENT_READER_ID = 2
-"""EventBuffer reader used by the capture worker while a chunk is in flight.
-
-session_runner registers UI=0 and MODEL=1. This extra reader lets the
-Playwright thread drain keys during generate without stealing the model
-loop's step-boundary batch (reset/close still go through MODEL).
-"""
 
 _DEFAULT_RENDER_PACE_S = 0.4
 """Wall-clock stretch for the first successor, before a generate has been timed."""
@@ -77,6 +77,20 @@ PROMPT_MESSAGE_TYPE = "prompt"
 
 _DEFAULT_PROMPT_EVENT_CHUNKS = 1
 """Chunks an event line stays in the prompt after the chunk it happened in."""
+
+
+def broadcast_step_gate(decision: bool) -> bool:
+    """Share rank zero's in-step decision with every rank.
+
+    Only rank zero renders the game, so only it can see a card or a restart; a
+    rank that skipped a generate its peers ran would deadlock the next
+    collective. Identity on a single process.
+    """
+    if not is_distributed_initialized():
+        return bool(decision)
+    payload = [bool(decision)]
+    torch.distributed.broadcast_object_list(payload, src=0)
+    return bool(payload[0])
 
 
 @dataclass(kw_only=True, slots=True)
@@ -142,8 +156,32 @@ class Game2VSessionConfig:
     fixed_camera: bool = True
     """Ignore browser camera controls for this game-to-video shell."""
 
-    game_slug: str = "freeze"
-    """Local WebGameVault game used for the conditioning timeline."""
+    game_slug: str = ""
+    """Registered EdenLive game rendered as the proxy; unused by a replay."""
+
+    autopilot: Path | None = None
+    """Script that plays the game headless from its ``demo.json``, or ``None``."""
+
+    proxy_video: Path | None = None
+    """Recorded proxy video replayed instead of a live game, or ``None``."""
+
+    proxy_frames: int | None = None
+    """Output frames a replay generates (``4n + 1``); set with ``proxy_video``."""
+
+    prompt_schedule: tuple[str, ...] | None = None
+    """One full prompt per AR chunk of a replay (``--prompts-json``), or ``None``."""
+
+    record_proxy: Path | None = None
+    """MP4 receiving every proxy frame the model consumed, or ``None``."""
+
+    chunk_log: Path | None = None
+    """JSONL file receiving one record per generated chunk, or ``None``."""
+
+    side_by_side: bool = False
+    """Present the proxy frame left of the generated frame."""
+
+    register_panel: bool = False
+    """Mount the ``/ext/game2v`` browser panel (an integration WebRTC window only)."""
 
     control_stream_factory: (
         Callable[["Game2VSessionConfig", SessionDesc], Any] | None
@@ -213,6 +251,10 @@ class Game2VSessionConfig:
             )
         if not isinstance(self.dynamic_prompt, bool):
             raise TypeError("Game2VSessionConfig.dynamic_prompt must be bool.")
+        if (self.proxy_video is None) != (self.proxy_frames is None):
+            raise ValueError(
+                "Game2V proxy_video and proxy_frames must be set together."
+            )
         if (self.model_video_width is None) != (self.model_video_height is None):
             raise ValueError("Cam2V model dimensions must be set together.")
         if self.model_video_width is not None:
@@ -273,8 +315,24 @@ class Game2VModelState:
 
     pending_game_frames: Any = field(default_factory=deque)
 
-    event_buffer: EventBuffer | None = None
-    """Session EventBuffer; rank zero's capture worker reads it mid-generate."""
+    live_input: queue.SimpleQueue | None = None
+    """Game key payloads the UI loop forwards; the capture worker drains it per frame."""
+
+    proxy_recorder: Any = None
+    """Rank-zero :class:`~eden.apps.game2v.recording.ProxyRecorder`, opened lazily."""
+
+    chunk_log: Any = None
+    """Open ``--chunk-log`` text file, or ``None``."""
+
+    opening_prompt: str = ""
+    """The text the rollout cache was built from."""
+
+    browser_feed: Any = None
+    """UI loop whose :class:`~eden.apps.game2v.game_ui.BrowserFeed` receives HUD
+    envelopes and prompts for the browser window; ``None`` without one."""
+
+    published_frames: int = 0
+    """Frames published since the last reset, i.e. the presentation frame count."""
 
     last_generate_wall_s: float | None = None
     """Wall time of the previous ``generate_step``, used to pace the next render."""
@@ -453,7 +511,10 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         """Apply new keyboard edges and generate one autoregressive block."""
         state = self.state
         if _enter_start_gate(state):
-            self.exclude_from_step_time(_await_start(state, self._shutdown_event))
+            # ponytail: v0.2.0 has no IModelLoop.exclude_from_step_time, so the
+            # wait is charged to this step and slows presentation cadence for a
+            # few frames after it. Upgrade: a core hook (fork api_v2/loop.py).
+            _await_start(state, self._shutdown_event)
             state.started = True
         _apply_pending_game_switch(state)
         step_started_at = time.perf_counter()
@@ -490,11 +551,9 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
             # Either the first step, or the step after a card paused the
             # pipeline. Both start their render here; the pause is released
             # first so no simulation runs while the card is still up.
+            # Waiting on the client is not generation cost; see the ponytail at
+            # the start gate above for the step-time consequence.
             held_s = _await_dialog_dismissed(state, self._shutdown_event)
-            # Waiting on the client is not generation cost. Left in the step
-            # time it would be read as this chunk taking seconds to produce,
-            # and presentation would crawl for seconds after the card closed.
-            self.exclude_from_step_time(held_s)
             state.steady_held_s += held_s
             if state.blocks_generated == 0:
                 # The browser launches lazily inside this first capture, and the
@@ -539,6 +598,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                 f"{frame_count}-frame model step; the pipelined chunk and the "
                 "model cadence disagree."
             )
+        _record_proxy_frames(state, state.last_game_chunk)
         # Submitted before generating so the browser renders the next chunk while
         # the GPU works on this one, stretched to the last generate so keys that
         # arrive during this generate land in the in-flight sim. The final step
@@ -738,10 +798,26 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                     elapsed_s=model_step_wall_s,
                 )
             )
+        evaluate_s = getattr(state.game_capture, "last_evaluate_s", 0.0)
+        decode_s = getattr(state.game_capture, "last_decode_s", 0.0)
+        _write_chunk_log(
+            state,
+            step_index=step_index,
+            ar_index=ar_index,
+            frame_count=frame_count,
+            timings_s={
+                "capture_wait": game_capture_wall_s,
+                "render_eval": evaluate_s,
+                "render_decode": decode_s,
+                "prompt_encode": generate_wall_s
+                - (model_completed_at - generate_started_at),
+                "generate": generate_wall_s,
+                "model_loop": step_completed_at - step_started_at,
+            },
+            chunk_fps=float(metrics["chunk_fps"]),
+        )
         if state.config.log_model_timing:
             phase = "warmup" if ar_index < state.config.warmup_blocks else "steady"
-            evaluate_s = getattr(state.game_capture, "last_evaluate_s", 0.0)
-            decode_s = getattr(state.game_capture, "last_decode_s", 0.0)
             # Pipelined, so `capture` is the leftover wait after the overlap, not
             # the render cost; `eval`/`decode` are that render's own timings.
             logger.info(
@@ -758,17 +834,6 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
             )
         _publish_ui_status(state, metrics)
         _publish_browser_metrics(state, metrics, epoch=browser_metrics_epoch)
-        # The text was composed, and encoded when per-chunk prompts are on,
-        # before the generate above. The event lines still travel on their own
-        # so the client shows exactly this chunk's set, replaced wholesale when
-        # the next chunk's message arrives.
-        prompt_message = (
-            {
-                "type": PROMPT_MESSAGE_TYPE,
-                "static": state.static_prompt,
-                "events": list(state.active_event_lines),
-            },
-        )
         results = [
             StepResult(
                 step_index=step_index,
@@ -776,10 +841,11 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                 frame_count=output_frame_count,
                 output_layout=state.session_desc.output_layout,
                 metrics=finalize_metrics,
-                client_messages=prompt_message,
             )
         ]
 
+        # Channel 1 is the proxy render paired frame for frame with channel 0,
+        # so a UI loop or window can show or record both.
         if state.game_capture is not None:
             if output_frame_count > len(state.pending_game_frames):
                 raise RuntimeError(
@@ -796,20 +862,13 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                     ).permute(0, 3, 1, 2),
                     frame_count=output_frame_count,
                     output_layout=VideoTensorLayout.tchw,
-                    frame_metadata=tuple(
-                        envelope(f.game_slug, f.game_frame_id, f.ui_state)
-                        for f in paired
-                    ),
                 )
             )
+            # Before returning, so the messages are queued before the frames
+            # they describe are published.
+            _feed_browser(state, paired, generation=self._generation)
+        state.published_frames += output_frame_count
         return results
-
-    def attach_event_buffer(self, event_buffer: EventBuffer, reader_id: int) -> None:
-        """Let the rank-zero capture worker drain keys during generate."""
-        if int(os.environ.get("RANK", "0")) != 0:
-            return
-        self.state.event_buffer = event_buffer
-        event_buffer.register(GAME_EVENT_READER_ID)
 
     def is_finished(self) -> bool:
         """Return whether this rollout generated its requested blocks."""
@@ -845,8 +904,8 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         state.active_event_lines = ()
         state.encoded_prompt = ""
         state.prompt_events.clear()
-        if state.event_buffer is not None:
-            state.event_buffer.read(GAME_EVENT_READER_ID)
+        state.published_frames = 0
+        _drain_live_game_events(state)
         state.pose_integrator.reset()
         state.steady_started_at = None
         state.steady_frames_generated = 0
@@ -864,13 +923,14 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
             self.state.game_capture.close()
             self.state.game_capture = None
         self.state.pending_game_frames.clear()
-        if self.state.event_buffer is not None:
-            self.state.event_buffer.unregister(GAME_EVENT_READER_ID)
-            self.state.event_buffer = None
+        self.state.live_input = None
         self.state.cache = None
         self.state.comparison_pending_generated_frames = None
-        if self.state.postprocess_stream is not None:
-            self.state.postprocess_stream.finish()
+        try:
+            if self.state.postprocess_stream is not None:
+                self.state.postprocess_stream.finish()
+        finally:
+            _close_outputs(self.state)
 
 
 class Game2VSession(ISession):
@@ -929,9 +989,18 @@ class Game2VSession(ISession):
 
     def init(self) -> None:
         """Register the UI and model-generation loops with isolated state."""
-        from .game_ui import Game2VUILoop
+        from .game_ui import BrowserFeed, Game2VUILoop
 
-        self.register_ui_loop(Game2VUILoop, state=None)
+        # Keys reach the capture worker through the UI loop, which reads every
+        # input batch on the UI thread; the worker drains them between frames.
+        live_input: queue.SimpleQueue = queue.SimpleQueue()
+        browser = bool(getattr(self._config, "register_panel", False))
+        game_ui = self.register_ui_loop(
+            Game2VUILoop,
+            state=BrowserFeed() if browser else None,
+            live_input=live_input,
+            side_by_side=bool(getattr(self._config, "side_by_side", False)),
+        )
         ui_loop = None
         # The proxy-DINO encoder is built lazily, on the first chunk that needs
         # it, which reads as a stall right before the first frame. Build it now
@@ -960,24 +1029,25 @@ class Game2VSession(ISession):
                 pose_integrator=self._config.pose_integrator_factory(),
                 ui_loop=ui_loop,
                 control_stream=control_stream,
+                live_input=live_input,
+                browser_feed=game_ui if browser else None,
             ),
         )
-        if int(os.environ.get("RANK", "0")) == 0:
+        if (
+            getattr(self._config, "register_panel", False)
+            and int(os.environ.get("RANK", "0")) == 0
+        ):
             from .panel import register_game2v_panel
-            from .workbench_proxy import register_workbench
 
             register_game2v_panel(self)
-            register_workbench()
             self._panel_registered = True
 
     def close(self) -> None:
         """Drop the web panel, then release session-owned tensors."""
         if self._panel_registered:
             from .panel import unregister_game2v_panel
-            from .workbench_proxy import unregister_workbench
 
             unregister_game2v_panel()
-            unregister_workbench()
             self._panel_registered = False
         super().close()
 
@@ -985,36 +1055,37 @@ class Game2VSession(ISession):
 def _game_input_payloads(events: UserInputEvents) -> list[dict[str, str]]:
     """Turn keyboard edges and HUD clicks into Chromium ``{action, phase}`` dicts.
 
-    Overlay actions are click pulses rather than held keys, so each client action
-    is a down immediately followed by an up. Reset/close stay with the model
-    reader; they are not game keys. The runtime does not interpret the action
-    name; Chromium's ``handleUiAction`` owns that vocabulary.
+    Reset/close stay with the model reader; they are not game keys. The key is
+    lowercased: the page rebuilds ``key``/``code`` from it (``arrowleft``,
+    ``enter``, ``' '``), which matches the browser-style names native-window and
+    WebRTC report. A HUD button is a click, so it becomes a down immediately
+    followed by an up.
     """
     payloads: list[dict[str, str]] = []
     for event in events.get_events():
         if isinstance(event, KeyboardUserInputEvent):
-            payloads.append(
-                {
-                    "action": event.key.lower(),
-                    "phase": (
-                        "down" if event.state is KeyboardInputState.PRESSED else "up"
-                    ),
-                }
-            )
-        elif isinstance(event, ClientActionUserInputEvent):
-            if event.channel in ("", GAME_UI_ACTION_CHANNEL) and event.action:
-                payloads.append({"action": event.action, "phase": "down"})
-                payloads.append({"action": event.action, "phase": "up"})
+            phase = "down" if event.state is KeyboardInputState.PRESSED else "up"
+            payloads.append({"action": event.key.lower(), "phase": phase})
+        elif (
+            isinstance(event, GameUIActionEvent)
+            and event.action
+            and event.channel in ("", GAME_UI_ACTION_CHANNEL)
+        ):
+            payloads.append({"action": event.action, "phase": "down"})
+            payloads.append({"action": event.action, "phase": "up"})
     return payloads
 
 
 def _drain_live_game_events(state: Game2VModelState) -> list[dict[str, str]]:
-    """Read keys that arrived since the last capture frame, on the worker thread."""
-    buffer = state.event_buffer
-    if buffer is None:
-        return []
-    events, _generation = buffer.read(GAME_EVENT_READER_ID)
-    return _game_input_payloads(events)
+    """Take the keys the UI loop forwarded since the last capture frame."""
+    live_input = getattr(state, "live_input", None)
+    payloads: list[dict[str, str]] = []
+    while live_input is not None:
+        try:
+            payloads.append(live_input.get_nowait())
+        except queue.Empty:
+            break
+    return payloads
 
 
 def _chunk_event_lines(chunk: GameChunkPacket | None) -> list[tuple[str, str]]:
@@ -1077,6 +1148,16 @@ def _compose_chunk_prompt(state: Game2VModelState) -> tuple[str, tuple[str, ...]
         their own and drop them when the chunk finishes, rather than appending
         them to a growing history.
     """
+    if getattr(state.config, "proxy_video", None) is not None:
+        # A replay has no game events. Its text is the one prompt it was given,
+        # or the --prompts-json schedule entry for the chunk being generated.
+        schedule = state.config.prompt_schedule or (state.config.conditioning.prompt,)
+        if not state.static_prompt:
+            state.static_prompt = schedule[0]
+        state.active_prompt = schedule[min(state.ar_index, len(schedule) - 1)]
+        state.active_event_lines = ()
+        _encode_chunk_prompt(state)
+        return state.static_prompt, ()
     static = ""
     event_lines: tuple[str, ...] = ()
     if state.game_capture is not None:
@@ -1100,7 +1181,7 @@ def _compose_chunk_prompt(state: Game2VModelState) -> tuple[str, tuple[str, ...]
         static = state.static_prompt
         event_lines = tuple(text for _, _, text in retained)
     if is_distributed_initialized():
-        from flashdreams.runtime_v2.distributed_sync import dist
+        import torch.distributed as dist
 
         payload = [(static, event_lines)]
         dist.broadcast_object_list(payload, src=0)
@@ -1218,7 +1299,8 @@ def _opening_prompt(state: Game2VModelState, fallback: str) -> str:
     entry that declares none, so the cache is never initialized from nothing.
     """
     static, _ = _compose_chunk_prompt(state)
-    return static or fallback
+    state.opening_prompt = static or fallback
+    return state.opening_prompt
 
 
 def _pace_duration_s(state: Game2VModelState, step_index: int) -> float:
@@ -1235,9 +1317,12 @@ def _dialog_pause_enabled(state: Game2VModelState) -> bool:
     A file render has nobody to dismiss a card, and some games end a round on
     their own, so holding the rollout there would never resume. The runtime
     selects ``ON_DEMAND`` for ``--mode mp4``; the interactive modes generate
-    continuously. Every rank reads the same session description, so this cannot
-    make ranks disagree.
+    continuously. An autopiloted game has nobody to dismiss a card either, even
+    in a browser or window. Every rank reads the same session description and
+    config, so this cannot make ranks disagree.
     """
+    if getattr(state.config, "autopilot", None) is not None:
+        return False
     return state.session_desc.presentation_mode is PresentationMode.CONTINUOUS
 
 
@@ -1330,6 +1415,7 @@ def _anchor_frame(state: Game2VModelState) -> torch.Tensor:
     model_height = state.config.model_video_height or state.session_desc.video_height
     model_width = state.config.model_video_width or state.session_desc.video_width
     import math
+
     import numpy as np
     import torch.nn.functional as F
     from PIL import Image
@@ -1395,7 +1481,7 @@ def _apply_pending_game_switch(state: Game2VModelState) -> None:
     requested = state.pending_game_slug
     restart = getattr(state, "pending_game_restart", False)
     if is_distributed_initialized():
-        from flashdreams.runtime_v2.distributed_sync import dist
+        import torch.distributed as dist
 
         payload = [(requested, restart)]
         dist.broadcast_object_list(payload, src=0)
@@ -1448,8 +1534,7 @@ def _end_rollout(state: Game2VModelState) -> None:
     state.comparison_pending_generated_frames = None
     if state.postprocess_stream is not None:
         state.postprocess_stream.reset()
-    if state.event_buffer is not None:
-        state.event_buffer.read(GAME_EVENT_READER_ID)
+    _drain_live_game_events(state)
 
 
 def _switch_game(state: Game2VModelState, slug: str) -> None:
@@ -1709,13 +1794,29 @@ def _begin_game_chunk(
             state.control_stream.submit(step_index, chunk)
         return chunk
     if state.game_capture is None:
-        from .game_renderer import GameCaptureWorker
+        width = state.config.model_video_width or state.session_desc.video_width
+        height = state.config.model_video_height or state.session_desc.video_height
+        proxy_video = getattr(state.config, "proxy_video", None)
+        if proxy_video is not None:
+            from .recording import RecordingCaptureWorker
 
-        state.game_capture = GameCaptureWorker(
-            state.config.game_slug,
-            width=state.config.model_video_width or state.session_desc.video_width,
-            height=state.config.model_video_height or state.session_desc.video_height,
-        )
+            assert state.config.proxy_frames is not None
+            state.game_capture = RecordingCaptureWorker(
+                proxy_video,
+                width=width,
+                height=height,
+                fps=state.session_desc.frames_per_second_for_step,
+                num_frames=state.config.proxy_frames,
+            )
+        else:
+            from .game_renderer import GameCaptureWorker
+
+            state.game_capture = GameCaptureWorker(
+                state.config.game_slug,
+                width=width,
+                height=height,
+                autopilot=getattr(state.config, "autopilot", None),
+            )
     pending = state.game_capture.submit(
         chunk,
         duration_s=duration_s,
@@ -1750,6 +1851,115 @@ def _discard_pending_game_chunk(state: Game2VModelState) -> None:
         pending.result()
     except Exception:
         logger.opt(exception=True).debug("Discarded Game2V chunk render failed.")
+
+
+def _feed_browser(state: Game2VModelState, paired: list, *, generation: int) -> None:
+    """Queue each paired frame's HUD envelope, and the chunk's prompt, for the browser.
+
+    Keyed by presentation frame number (1-based within the reset generation),
+    which is what the UI loop reads back as ``presented_model_frame_count``.
+    """
+    ui = getattr(state, "browser_feed", None)
+    if ui is None or not paired:
+        return
+    base = state.published_frames
+    messages = {
+        base + index + 1: [
+            envelope(frame.game_slug, frame.game_frame_id, frame.ui_state)
+        ]
+        for index, frame in enumerate(paired)
+    }
+    # The text this chunk was conditioned on; the client replaces its panel
+    # wholesale with each chunk's set.
+    messages[base + 1].insert(
+        0,
+        {
+            "type": PROMPT_MESSAGE_TYPE,
+            "static": state.static_prompt or state.opening_prompt,
+            "events": list(state.active_event_lines),
+        },
+    )
+    try:
+        invoke_async(ui, lambda feed: feed.add(generation, messages))
+    except RuntimeError:
+        # The UI loop is shutting down; nobody is left to show these.
+        pass
+
+
+def _record_proxy_frames(state: Game2VModelState, chunk: GameChunkPacket) -> None:
+    """Append the frames the model is about to consume to ``--record-proxy``."""
+    path = getattr(state.config, "record_proxy", None)
+    frames = [frame.ui_frame for frame in chunk.frames if frame.ui_frame is not None]
+    if path is None or not frames:
+        return
+    if state.proxy_recorder is None:
+        from .recording import ProxyRecorder
+
+        height, width = frames[0].shape[:2]
+        state.proxy_recorder = ProxyRecorder(
+            path,
+            width=width,
+            height=height,
+            fps=state.session_desc.frames_per_second_for_step,
+        )
+    state.proxy_recorder.write(frames)
+
+
+def _write_chunk_log(
+    state: Game2VModelState,
+    *,
+    step_index: int,
+    ar_index: int,
+    frame_count: int,
+    timings_s: Mapping[str, float],
+    chunk_fps: float,
+) -> None:
+    """Append one JSON line describing the chunk just generated to ``--chunk-log``.
+
+    ``first_frame`` counts output frames since the rollout (re)started, so it
+    indexes the recorded video. ``condition_frames`` are the capture-frame ids
+    (1-based, never rewound) of the frames the proxy encoder saw; in a replay
+    they are the video frame index plus one.
+    """
+    path = getattr(state.config, "chunk_log", None)
+    if path is None:
+        return
+    if state.chunk_log is None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        state.chunk_log = open(path, "w", encoding="utf-8")
+    chunk = state.last_game_chunk
+    frames = chunk.frames if chunk is not None else ()
+    dynamic = getattr(state.config, "dynamic_prompt", False)
+    record = {
+        "step": step_index,
+        "chunk": ar_index,
+        "frames": frame_count,
+        "first_frame": state.frames_generated - frame_count,
+        "condition_frames": [
+            frame.game_frame_id for frame in frames if frame.condition_frame is not None
+        ],
+        "prompt": (state.encoded_prompt or state.opening_prompt)
+        if dynamic
+        else state.opening_prompt,
+        "events": list(state.active_event_lines),
+        "timings_ms": {name: value * 1_000.0 for name, value in timings_s.items()},
+        "chunk_fps": chunk_fps,
+        "game_state": frames[-1].ui_state if frames else None,
+    }
+    state.chunk_log.write(json.dumps(record, default=str) + "\n")
+    state.chunk_log.flush()
+
+
+def _close_outputs(state: Game2VModelState) -> None:
+    """Finish ``--record-proxy`` and ``--chunk-log``; both survive rollout restarts."""
+    recorder, state.proxy_recorder = state.proxy_recorder, None
+    log, state.chunk_log = state.chunk_log, None
+    try:
+        if recorder is not None:
+            recorder.close()
+    finally:
+        if log is not None:
+            log.close()
 
 
 def _publish_ui_status(
@@ -1852,7 +2062,6 @@ def _resize_raw_for_presentation(
 
 
 __all__ = [
-    "GAME_EVENT_READER_ID",
     "Game2VModelState",
     "Game2VModelLoop",
     "Game2VSession",

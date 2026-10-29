@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Game2V wiring for the proxy-DINO conditioned 5B model.
 
@@ -21,16 +23,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from eden.impl.game14b.control_stream import ProxyDinoControlStream
-from eden.impl.game14b.dino import ProxyDinoEncoderConfig
-
 # The per-game cover/prompt resolution and the step-generate hook are
 # model-independent, so the 14B's are reused verbatim rather than copied.
 from eden.apps.game2v.game14b import (
     game_cover_path,
+)
+from eden.apps.game2v.game14b import (
     generate_game14b_step as generate_game5b_step,
+)
+from eden.apps.game2v.game14b import (
     resolve_game14b_conditioning as resolve_game5b_conditioning,
 )
+from eden.impl.game14b.control_stream import ProxyDinoControlStream
+from eden.impl.game14b.dino import ProxyDinoEncoderConfig
 
 # Wan 2.2 TI2V-5B's VAE packs a 2x2 patchify on top of the usual 8x encoder
 # downsample. The control rides on the pre-patchify latent grid (the DiT applies
@@ -47,7 +52,8 @@ def make_game5b_control_stream(
     2.2 TI2V-5B VAE's 16x spatial ratio, so the features land on the DiT's grid
     without a second resample at consume time.
     """
-    from eden.config import GAME2V_5B_LEN_T, GAME2V_5B_SPEC as _SPEC
+    from eden.config import GAME2V_5B_LEN_T
+    from eden.config import GAME2V_5B_SPEC as _SPEC
     from eden.impl.pipeline_yaml import component_path
 
     pixel_width = config.model_video_width or session_desc.video_width

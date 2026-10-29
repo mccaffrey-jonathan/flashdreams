@@ -1,7 +1,9 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
-# Modified by Vast AI for EdenLive.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
+# recorded-proxy replay, proxy/side-by-side recording and a per-chunk log.
 
 """Reusable camera-to-video application on the FlashDreams v2 API."""
 
@@ -29,8 +31,14 @@ from flashdreams.runtime_v2.session_desc import SessionDesc
 from flashdreams.runtime_v2.video_tensor import VideoTensorLayout
 
 from .defaults import Cam2VApplicationDefaults, Cam2VConditioning
-from .game_renderer import registered_game_slugs
+from .game_renderer import (
+    GamesRootError,
+    default_autopilot_script,
+    games_root,
+    registered_game_slugs,
+)
 from .postprocess_comparison import comparison_output_spec
+from .recording import load_chunk_prompts, recording_frame_count
 from .session import Game2VSession, Game2VSessionConfig
 
 
@@ -59,6 +67,28 @@ class Game2VApplication(IApplication):
         # ``None`` until ``--compile`` / ``--no-compile`` says otherwise, which
         # leaves every component on its own config default.
         self._compile: bool | None = None
+        self._client_window_mode: str | None = None
+        self._autopilot: Path | None = None
+        self._proxy_video: Path | None = None
+        self._proxy_frames: int | None = None
+        self._prompt_schedule: tuple[str, ...] | None = None
+        self._record_proxy: Path | None = None
+        self._chunk_log: Path | None = None
+        self._side_by_side = False
+
+    def resolve_client_window_mode(self, mode: str) -> str:
+        """Serve ``webrtc`` through Game2V's own browser window when it is installed.
+
+        The ``eden-webrtc`` mode adds the game render, the HUD overlay, the
+        prompt panels and the game panel to FlashDreams' page. Every other mode
+        is kept as asked.
+        """
+        from .browser import EDEN_WEBRTC_MODE, eden_webrtc_mode_installed
+
+        if mode == "webrtc" and eden_webrtc_mode_installed():
+            mode = EDEN_WEBRTC_MODE
+        self._client_window_mode = mode
+        return mode
 
     @property
     def pipeline_config(self) -> Any:
@@ -71,8 +101,85 @@ class Game2VApplication(IApplication):
             prog="flashdreams-run-v2 CAM2V_SLUG --",
             description="Generate video from a first frame and keyboard camera input.",
         )
-        # Choices come from games/registry.json, so a ported game needs no edit here.
-        parser.add_argument("--game", choices=registered_game_slugs(), default=self.defaults.game_slug)
+        # Validated against registry.json after parsing, so --help and a replay
+        # work without EDEN_GAMES_ROOT.
+        try:
+            game_help = (
+                "One of: " + ", ".join(registered_game_slugs(root=games_root())) + "."
+            )
+        except GamesRootError as error:
+            game_help = str(error)
+        parser.add_argument(
+            "--game",
+            default=self.defaults.game_slug or None,
+            help=(
+                "EdenLive game rendered as the proxy (default: the first in "
+                f"$EDEN_GAMES_ROOT/registry.json). {game_help}"
+            ),
+        )
+        parser.add_argument(
+            "--autopilot",
+            nargs="?",
+            const="",
+            default=None,
+            metavar="SCRIPT",
+            help=(
+                "Play the game headless with a rule-based autopilot that reads "
+                "<game>/demo.json, so recordings show gameplay. Default script: "
+                "$EDEN_GAMES_ROOT/_shared/autopilot.js."
+            ),
+        )
+        replay = parser.add_argument_group(
+            "replay",
+            "Replace the live game with a recorded proxy video, read exactly as "
+            "LightX2V's EdenLive RecordingReader reads it.",
+        )
+        replay.add_argument(
+            "--proxy-video",
+            type=Path,
+            default=None,
+            help=(
+                "Recorded proxy video. Requires --first-frame and --prompt (or "
+                "--prompts-json). The rollout covers the whole video: "
+                "4*((floor(duration*fps)-1)//4)+1 frames."
+            ),
+        )
+        replay.add_argument(
+            "--max-frames",
+            type=int,
+            default=None,
+            help="Cap the replay at N frames before rounding down to 4n+1.",
+        )
+        replay.add_argument(
+            "--prompts-json",
+            type=Path,
+            default=None,
+            help=(
+                "EdenLive prompts.json. Each chunk's prompt is staticPrompt plus "
+                "the dynamicPrompts overlapping its frames; the text encoder "
+                "stays resident when the prompt changes. Default: the static "
+                "--prompt for every chunk."
+            ),
+        )
+        record = parser.add_argument_group("recording")
+        record.add_argument(
+            "--record-proxy",
+            type=Path,
+            default=None,
+            help="Write every proxy frame the model consumed to this MP4.",
+        )
+        record.add_argument(
+            "--side-by-side",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Present proxy | generated frames, twice the model width.",
+        )
+        record.add_argument(
+            "--chunk-log",
+            type=Path,
+            default=None,
+            help="Write one JSON line per generated chunk (frames, prompt, timings).",
+        )
         parser.add_argument(
             "--wait-for-start",
             action=argparse.BooleanOptionalAction,
@@ -113,8 +220,11 @@ class Game2VApplication(IApplication):
         )
         parser.add_argument(
             "--image-path",
+            "--first-frame",
+            dest="image_path",
             type=Path,
             default=input_defaults.get("image_path"),
+            help="First frame; defaults to the game's cover.",
         )
         parser.add_argument(
             "--pose-path",
@@ -149,8 +259,11 @@ class Game2VApplication(IApplication):
         parser.add_argument(
             "--total-blocks",
             type=int,
-            default=self.defaults.total_blocks,
-            help="Autoregressive chunks generated per rollout. Default: %(default)s.",
+            default=None,
+            help=(
+                "Autoregressive chunks generated per rollout. Default: "
+                f"{self.defaults.total_blocks}, or the whole --proxy-video."
+            ),
         )
         parser.add_argument(
             "--warmup-blocks",
@@ -219,6 +332,12 @@ class Game2VApplication(IApplication):
         args = parser.parse_args(list(commandline_args))
 
         self._pipeline_config = self.defaults.pipeline_config
+        if args.proxy_video is not None:
+            self._resolve_replay(args)
+        else:
+            self._resolve_game(args)
+        if args.total_blocks is None:
+            args.total_blocks = self.defaults.total_blocks
         self._validate_arguments(args)
         self._apply_parsed_arguments(args)
         if args.compile is not None:
@@ -237,9 +356,17 @@ class Game2VApplication(IApplication):
         self._use_ui = args.ui and _is_rank_zero()
         self._game_slug = args.game
         self._prompt_event_chunks = args.prompt_event_chunks
-        self._dynamic_prompt = args.dynamic_prompt
+        # A --prompts-json schedule that changes text needs the per-chunk encoder.
+        self._dynamic_prompt = args.dynamic_prompt or bool(
+            self._prompt_schedule and len(set(self._prompt_schedule)) > 1
+        )
         self._wait_for_start = args.wait_for_start
-        os.environ["FLASHDREAMS_PAIRED_VIDEO"] = "1"
+        self._record_proxy = args.record_proxy
+        self._chunk_log = args.chunk_log
+        # The browser window crops its game panel out of the side-by-side canvas.
+        self._side_by_side = (
+            args.side_by_side or self._client_window_mode == "eden-webrtc"
+        )
         self._postprocess = _resolve_postprocess_config(
             preset=args.postprocess_preset,
             chunk_size=args.postprocess_chunk_size,
@@ -259,7 +386,83 @@ class Game2VApplication(IApplication):
             "example_data": args.example_data,
             "example_idx": args.example_idx,
             "total_blocks": args.total_blocks,
+            "proxy_video": args.proxy_video,
         }
+
+    def _resolve_game(self, args: argparse.Namespace) -> None:
+        """Check ``--game`` against the registry and locate the autopilot script."""
+        for flag in ("max_frames", "prompts_json"):
+            if getattr(args, flag) is not None:
+                raise ValueError(f"--{flag.replace('_', '-')} requires --proxy-video.")
+        root = games_root()
+        slugs = registered_game_slugs(root=root)
+        if not slugs:
+            raise GamesRootError(f"{root / 'registry.json'} registers no games.")
+        args.game = args.game or slugs[0]
+        if args.game not in slugs:
+            raise ValueError(
+                f"--game {args.game!r} is not in {root / 'registry.json'}; "
+                f"choose one of: {', '.join(slugs)}."
+            )
+        self._proxy_video = self._proxy_frames = self._prompt_schedule = None
+        self._autopilot = None
+        if args.autopilot is not None:
+            script = (
+                Path(args.autopilot) if args.autopilot else default_autopilot_script()
+            )
+            if not script.is_file():
+                raise FileNotFoundError(f"--autopilot script is missing: {script}")
+            self._autopilot = script
+
+    def _resolve_replay(self, args: argparse.Namespace) -> None:
+        """Size the rollout to the recording and bound the noise to its length.
+
+        The whole video's initial noise is drawn in one piece
+        (``max_latent_frames``), which is what reproduces the reference's RNG
+        stream for a seed.
+        """
+        for flag in ("dynamic_prompt", "wait_for_start"):
+            if getattr(args, flag):
+                raise ValueError(
+                    f"--{flag.replace('_', '-')} does not apply to --proxy-video."
+                )
+        if args.autopilot is not None:
+            raise ValueError("--autopilot does not apply to --proxy-video.")
+        if not args.proxy_video.is_file():
+            raise FileNotFoundError(f"--proxy-video is missing: {args.proxy_video}")
+        if args.max_frames is not None and args.max_frames < 5:
+            raise ValueError("--max-frames must be >= 5.")
+        num_frames = recording_frame_count(
+            args.proxy_video, fps=self.defaults.fps, max_frames=args.max_frames
+        )
+        len_t = int(self._pipeline_config.diffusion_model.transformer.len_t)
+        latent_frames = (num_frames - 1) // 4 + 1
+        if latent_frames % len_t:
+            whole = latent_frames // len_t * len_t
+            raise ValueError(
+                f"{args.proxy_video} gives {num_frames} frames = {latent_frames} "
+                f"latent frames, which is not a whole number of {len_t}-latent "
+                f"chunks; pass --max-frames {4 * whole - 3}."
+            )
+        self._pipeline_config = derive_config(
+            self._pipeline_config, diffusion_model={"max_latent_frames": latent_frames}
+        )
+        if args.total_blocks is None:
+            args.total_blocks = latent_frames // len_t
+        self._prompt_schedule = None
+        if args.prompts_json is not None:
+            self._prompt_schedule = load_chunk_prompts(
+                args.prompts_json,
+                num_frames,
+                fps=self.defaults.fps,
+                chunk_size=len_t,
+                static_prompt=args.prompt or None,
+            )
+            args.prompt = args.prompt or self._prompt_schedule[0]
+        self._proxy_video = args.proxy_video
+        self._proxy_frames = num_frames
+        self._autopilot = None
+        args.game = ""
 
     def session_desc(self) -> SessionDesc:
         """Return the model's default output shape and interactive rates."""
@@ -281,6 +484,14 @@ class Game2VApplication(IApplication):
                 f"{type(self).__name__}.init() must run before create_session()."
             )
         self._validate_layout(session_desc)
+        if (
+            self._proxy_video is not None
+            and session_desc.frames_per_second_for_step != self.defaults.fps
+        ):
+            raise ValueError(
+                f"--proxy-video is resampled to the model's {self.defaults.fps} fps; "
+                f"got --fps {session_desc.frames_per_second_for_step}."
+            )
         input_spec = VideoSpec(
             height=session_desc.video_height,
             width=session_desc.video_width,
@@ -316,7 +527,7 @@ class Game2VApplication(IApplication):
         # The runtime opens the UI and output sink from this presentation contract.
         session_desc = replace(
             session_desc,
-            video_width=output_spec.width,
+            video_width=output_spec.width * (2 if self._side_by_side else 1),
             video_height=output_spec.height,
         )
         postprocess_stream = None
@@ -355,6 +566,16 @@ class Game2VApplication(IApplication):
                 wait_for_start=self._wait_for_start,
                 control_stream_factory=self.defaults.control_stream_factory,
                 compile_control_encoder=self._compile is not False,
+                autopilot=self._autopilot,
+                proxy_video=self._proxy_video,
+                proxy_frames=self._proxy_frames,
+                prompt_schedule=self._prompt_schedule,
+                record_proxy=self._record_proxy,
+                chunk_log=self._chunk_log,
+                side_by_side=self._side_by_side,
+                # The /ext/game2v panel needs an integration-owned browser
+                # window; the built-in modes have nowhere to mount it.
+                register_panel=self._client_window_mode == "eden-webrtc",
             ),
             use_ui=self._use_ui,
         )
@@ -377,7 +598,10 @@ class Game2VApplication(IApplication):
     def _validate_arguments(self, args: argparse.Namespace) -> None:
         """Reject invalid rollout and timing settings."""
         if args.postprocess_preset:
-            raise ValueError("Game2V paired streaming currently requires --postprocess-preset= (no postprocessing).")
+            raise ValueError(
+                "Game2V pairs every generated frame with its proxy frame, so it "
+                "cannot post-process (pass no --postprocess-preset)."
+            )
         if args.total_blocks <= 0:
             raise ValueError("--total-blocks must be > 0.")
         model = self._pipeline_config.diffusion_model
@@ -461,7 +685,7 @@ def _apply_compile_flag(pipeline_config: Any, enabled: bool) -> Any:
         module = getattr(pipeline_config, component, None)
         if module is None:
             continue
-        module_changes = {
+        module_changes: dict[str, Any] = {
             name: enabled
             for name in ("use_compile", "use_cuda_graph")
             if hasattr(module, name)

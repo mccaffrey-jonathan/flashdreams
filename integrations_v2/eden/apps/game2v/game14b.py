@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Game2V wiring for the proxy-DINO conditioned AR 14B model.
 
@@ -20,7 +22,6 @@ Three things differ from the camera-control presets:
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -28,21 +29,14 @@ from typing import Any
 import torch
 from cam2v import Cam2VConditioning
 
+from eden.apps.game2v.game_renderer import games_root
 from eden.impl.game14b.control_stream import ProxyDinoControlStream
 from eden.impl.game14b.dino import ProxyDinoEncoderConfig
 
-def _games_root() -> Path:
-    """Locate the vendored games directory the renderer also reads."""
-    return Path(
-        os.environ.get(
-            "EDEN_GAMES_ROOT", Path(__file__).resolve().parents[4] / "games"
-        )
-    ).resolve()
-
 
 def _registry_entry(slug: str) -> Mapping[str, Any]:
-    root = _games_root()
-    entries = json.loads((root / "registry.json").read_text())["games"]
+    root = games_root()
+    entries = json.loads((root / "registry.json").read_text(encoding="utf-8"))["games"]
     for entry in entries:
         if entry.get("slug") == slug:
             return entry
@@ -55,7 +49,7 @@ def game_cover_path(slug: str) -> Path:
     cover = entry.get("cover")
     if not cover:
         raise ValueError(f"Game {slug!r} has no 'cover' in its registry entry.")
-    path = _games_root() / slug / str(cover)
+    path = games_root() / slug / str(cover)
     if not path.is_file():
         raise FileNotFoundError(f"Game {slug!r} cover image is missing: {path}")
     return path
@@ -65,23 +59,31 @@ def resolve_game14b_conditioning(values: Mapping[str, Any]) -> Cam2VConditioning
     """Resolve the first frame and prompt from the selected game's registry.
 
     ``--image-path`` and ``--prompt`` still override, so a single game can be
-    driven from an arbitrary frame or prompt without touching the registry.
+    driven from an arbitrary frame or prompt without touching the registry. A
+    replay (``proxy_video`` set) has no game: both must be given.
     """
-    slug = str(values.get("game") or "")
-    if not slug:
-        raise ValueError("Game2V 14B conditioning requires a game slug.")
-    entry = _registry_entry(slug)
-
     image_path = values.get("image_path")
-    first_frame_path = (
-        Path(image_path) if image_path not in (None, "") else game_cover_path(slug)
-    )
+    prompt = values.get("prompt") or ""
+    if not prompt and values.get("prompt_path"):
+        prompt = Path(values["prompt_path"]).read_text(encoding="utf-8").strip()
+    if values.get("proxy_video"):
+        if image_path in (None, "") or not prompt:
+            raise ValueError(
+                "A Game2V replay needs --first-frame and --prompt (or --prompt-path)."
+            )
+        first_frame_path = Path(image_path)
+    else:
+        slug = str(values.get("game") or "")
+        if not slug:
+            raise ValueError("Game2V 14B conditioning requires a game slug.")
+        entry = _registry_entry(slug)
+        first_frame_path = (
+            Path(image_path) if image_path not in (None, "") else game_cover_path(slug)
+        )
+        if not prompt:
+            prompt = str(entry.get("prompt", "")).strip()
     if not first_frame_path.is_file():
         raise FileNotFoundError(f"Game2V first frame is missing: {first_frame_path}")
-
-    prompt = values.get("prompt") or ""
-    if not prompt:
-        prompt = str(entry.get("prompt", "")).strip()
 
     pixel_width = int(values.get("pixel_width", 832))
     pixel_height = int(values.get("pixel_height", 480))
@@ -118,14 +120,17 @@ def generate_game14b_step(
     )
 
 
-def make_game14b_control_stream(config: Any, session_desc: Any) -> ProxyDinoControlStream:
+def make_game14b_control_stream(
+    config: Any, session_desc: Any
+) -> ProxyDinoControlStream:
     """Build the overlapped proxy-DINO encoder for one session.
 
     Latent dimensions come from the model's own frame size divided by the Wan
     VAE's 8x spatial ratio, so the features land on the DiT's grid without a
     second resample at consume time.
     """
-    from eden.config import GAME2V_14B_LEN_T as GAME2V_LEN_T, GAME2V_14B_SPEC as _SPEC
+    from eden.config import GAME2V_14B_LEN_T as GAME2V_LEN_T
+    from eden.config import GAME2V_14B_SPEC as _SPEC
     from eden.impl.pipeline_yaml import component_path
 
     pixel_width = config.model_video_width or session_desc.video_width

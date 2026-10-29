@@ -1,4 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """Tests for the GamePrototypeTurbo → Eden import path.
 
 Validates import_game and standalone.js without a browser or GPU by
@@ -112,15 +116,39 @@ def _write_project(tmp_path: Path) -> Path:
     run.mkdir(parents=True)
     (project / "brief.json").write_text(json.dumps(_BRIEF))
     (project / "package.json").write_text(json.dumps(_PACKAGE_JSON))
-    (project / ".state.json").write_text(json.dumps({
-        "current_stage": "done",
-        "stages": {
-            "intake": {"status": "passed", "evidence": [], "loop_count": 0, "artifact": "brief.json"},
-            "scene": {"status": "passed", "evidence": [], "loop_count": 0, "artifact": "runs/step1/scene"},
-            "behavior": {"status": "passed", "evidence": [], "loop_count": 0, "artifact": "runs/step2/behavior"},
-            "acceptance": {"status": "passed", "evidence": [], "loop_count": 0, "artifact": "runs/step3/final"},
-        },
-    }))
+    (project / ".state.json").write_text(
+        json.dumps(
+            {
+                "current_stage": "done",
+                "stages": {
+                    "intake": {
+                        "status": "passed",
+                        "evidence": [],
+                        "loop_count": 0,
+                        "artifact": "brief.json",
+                    },
+                    "scene": {
+                        "status": "passed",
+                        "evidence": [],
+                        "loop_count": 0,
+                        "artifact": "runs/step1/scene",
+                    },
+                    "behavior": {
+                        "status": "passed",
+                        "evidence": [],
+                        "loop_count": 0,
+                        "artifact": "runs/step2/behavior",
+                    },
+                    "acceptance": {
+                        "status": "passed",
+                        "evidence": [],
+                        "loop_count": 0,
+                        "artifact": "runs/step3/final",
+                    },
+                },
+            }
+        )
+    )
     (run / "index.html").write_text(_INDEX_HTML)
     (run / "main.js").write_text(_MAIN_JS)
     (run / "step3.json").write_text(json.dumps(_META))
@@ -152,10 +180,14 @@ def test_import_game_creates_registry_entry(tmp_path):
     # Provide a dummy cover so we don't need Playwright.
     cover = tmp_path / "cover.png"
     from PIL import Image
+
     Image.new("RGB", (1024, 576), (80, 120, 160)).save(cover)
 
     entry = import_game(
-        project, "star-course", root=root, cover=cover,
+        project,
+        "star-course",
+        root=root,
+        cover=cover,
         capture=lambda *a, **kw: None,  # skip browser capture
     )
     assert entry["slug"] == "star-course"
@@ -192,16 +224,20 @@ def test_import_game_replace(tmp_path):
     root.mkdir()
     cover = tmp_path / "cover.png"
     from PIL import Image
+
     Image.new("RGB", (1024, 576)).save(cover)
 
     noop = lambda *a, **kw: None
     import_game(project, "star-course", root=root, cover=cover, capture=noop)
     # A second import without --replace fails.
     from eden.apps.game2v.import_game import GameImportError
+
     with pytest.raises(GameImportError, match="already exists"):
         import_game(project, "star-course", root=root, cover=cover, capture=noop)
     # With --replace it succeeds.
-    import_game(project, "star-course", root=root, cover=cover, replace=True, capture=noop)
+    import_game(
+        project, "star-course", root=root, cover=cover, replace=True, capture=noop
+    )
     registry = json.loads((root / "registry.json").read_text())
     assert sum(1 for g in registry["games"] if g["slug"] == "star-course") == 1
 
@@ -235,12 +271,19 @@ def test_import_game_refuses_handported(tmp_path):
     project = _write_project(tmp_path)
     root = tmp_path / "games"
     root.mkdir()
-    (root / "registry.json").write_text(json.dumps({"games": [{"slug": "star-course"}]}))
+    (root / "registry.json").write_text(
+        json.dumps({"games": [{"slug": "star-course"}]})
+    )
     (root / "star-course").mkdir()
 
     with pytest.raises(GameImportError, match="hand-ported"):
-        import_game(project, "star-course", root=root, replace=True,
-                     capture=lambda *a, **kw: None)
+        import_game(
+            project,
+            "star-course",
+            root=root,
+            replace=True,
+            capture=lambda *a, **kw: None,
+        )
 
 
 def test_import_game_allow_incomplete(tmp_path):
@@ -265,11 +308,16 @@ def test_import_game_allow_incomplete(tmp_path):
     root.mkdir()
     cover = tmp_path / "cover.png"
     from PIL import Image
+
     Image.new("RGB", (1024, 576)).save(cover)
 
     entry = import_game(
-        project, "star-course", root=root, cover=cover,
-        allow_incomplete=True, capture=lambda *a, **kw: None,
+        project,
+        "star-course",
+        root=root,
+        cover=cover,
+        allow_incomplete=True,
+        capture=lambda *a, **kw: None,
     )
     assert entry["slug"] == "star-course"
     assert (root / "star-course" / "index.html").is_file()
@@ -279,7 +327,10 @@ def test_standalone_page_injection():
     """standalone_page injects the config and script tag after <head>."""
     from eden.apps.game2v.game_renderer import standalone_page
 
-    entry = {"restart_keys": ["r", "escape"], "event_prompts": {"round.won": "Victory!"}}
+    entry = {
+        "restart_keys": ["r", "escape"],
+        "event_prompts": {"round.won": "Victory!"},
+    }
     result = standalone_page(_INDEX_HTML, entry)
     assert "window.gameStandalone=" in result
     assert "/host/standalone.js" in result
@@ -328,5 +379,7 @@ def test_event_prompts_come_from_the_game_source(tmp_path):
     }
     entry = registry_entry(project, run, "test-game")
     assert entry["event_prompts"] == derived
-    explicit = registry_entry(project, run, "test-game", event_prompts={"race.checkpoint": "A checkpoint."})
+    explicit = registry_entry(
+        project, run, "test-game", event_prompts={"race.checkpoint": "A checkpoint."}
+    )
     assert explicit["event_prompts"] == {"race.checkpoint": "A checkpoint."}

@@ -1,5 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """Deterministic 60 Hz chunk/frame metadata for Game2V.
 
 This timeline never runs the authoritative simulation and does not freeze live
@@ -9,11 +12,13 @@ they arrive while the capture worker paces the in-flight chunk.
 
 from __future__ import annotations
 
-from collections import deque
-from fractions import Fraction
 import math
+from collections import deque
 from dataclasses import dataclass
-from typing import Literal
+from fractions import Fraction
+from typing import Any, Literal
+
+import numpy as np
 
 GAME_SIM_HZ = 60
 GAME_SIM_DT = 1.0 / GAME_SIM_HZ
@@ -43,9 +48,11 @@ class GameFramePacket:
     input_sequence: int
     game_slug: str
     capture_condition: bool = False
-    ui_frame: object | None = None
-    condition_frame: object | None = None
-    ui_state: object | None = None
+    ui_frame: np.ndarray | None = None
+    """Captured ``[H, W, 3]`` uint8 RGB render, once the chunk is rendered."""
+    condition_frame: np.ndarray | None = None
+    """The same array as :attr:`ui_frame` on a frame the model is conditioned on."""
+    ui_state: Any = None
     """JSON-serializable HUD snapshot for this frame, or None.
 
     Produced by the game's own transport module. The runtime forwards it
@@ -122,7 +129,11 @@ class GameTimeline:
     ) -> None:
         if simulation_hz <= 0:
             raise ValueError("simulation_hz must be positive")
-        if isinstance(condition_stride, bool) or not isinstance(condition_stride, int) or condition_stride <= 0:
+        if (
+            isinstance(condition_stride, bool)
+            or not isinstance(condition_stride, int)
+            or condition_stride <= 0
+        ):
             raise ValueError("condition_stride must be a positive integer")
         self.game_slug = game_slug
         self.simulation_hz = simulation_hz
@@ -135,21 +146,33 @@ class GameTimeline:
         self._time = Fraction(0)
         self._last_sequence = 0
 
-    def begin_chunk(self, frame_count: int, frames_per_second: float) -> GameChunkPacket:
+    def begin_chunk(
+        self, frame_count: int, frames_per_second: float
+    ) -> GameChunkPacket:
         """Space ``frame_count`` captures across ``frame_count / fps`` of 60 Hz sim.
 
         Simulation stays at ``simulation_hz``. The model fps only chooses which
         ticks become captured frames, so a 16 fps model samples every ~3.75
         ticks and a 24 fps model every 2.5, with no other rate baked in.
         """
-        if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+        if (
+            isinstance(frame_count, bool)
+            or not isinstance(frame_count, int)
+            or frame_count <= 0
+        ):
             raise ValueError("frame_count must be positive")
         if not math.isfinite(frames_per_second) or frames_per_second <= 0:
             raise ValueError("frames_per_second must be positive")
         snapshot = self.input.snapshot_for_chunk()
         start_tick = self.simulation_tick
         start_time = self.logical_time_s
-        tick_count = round((self._time + Fraction(frame_count) / Fraction(str(frames_per_second))) * self.simulation_hz) - start_tick
+        tick_count = (
+            round(
+                (self._time + Fraction(frame_count) / Fraction(str(frames_per_second)))
+                * self.simulation_hz
+            )
+            - start_tick
+        )
         if tick_count <= 0:
             raise ValueError("chunk duration must contain at least one simulation tick")
         # One condition frame per latent frame, at a fixed position inside the
@@ -162,17 +185,25 @@ class GameTimeline:
         # chunk mid-phase and comes up a condition frame short.
         frames: list[GameFramePacket] = []
         for frame_index in range(frame_count):
-            tick = round((self._time + Fraction(frame_index + 1) / Fraction(str(frames_per_second))) * self.simulation_hz)
+            tick = round(
+                (
+                    self._time
+                    + Fraction(frame_index + 1) / Fraction(str(frames_per_second))
+                )
+                * self.simulation_hz
+            )
             capture_condition = (frame_index % self.condition_stride) == 0
             self.game_frame_id += 1
-            frames.append(GameFramePacket(
-                game_frame_id=self.game_frame_id,
-                logical_time_s=start_time + (frame_index + 1) / frames_per_second,
-                simulation_tick=tick,
-                input_sequence=snapshot.sequence,
-                game_slug=self.game_slug,
-                capture_condition=capture_condition,
-            ))
+            frames.append(
+                GameFramePacket(
+                    game_frame_id=self.game_frame_id,
+                    logical_time_s=start_time + (frame_index + 1) / frames_per_second,
+                    simulation_tick=tick,
+                    input_sequence=snapshot.sequence,
+                    game_slug=self.game_slug,
+                    capture_condition=capture_condition,
+                )
+            )
         self.simulation_tick += tick_count
         self._time += Fraction(frame_count) / Fraction(str(frames_per_second))
         self.logical_time_s = float(self._time)

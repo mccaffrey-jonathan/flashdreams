@@ -1,11 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """Rank-zero HTTP panel for listing, previewing, importing and switching games.
 
 Mounted under ``/ext/game2v/``. The aiohttp router is frozen by the time a
 session starts, so registration goes through
-:func:`flashdreams.runtime_v2.serving.extensions.register_http_extension`.
+:func:`eden.apps.game2v.extensions.register_http_extension`.
 The browser loads ``panel.js`` from ``/extensions.json``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,18 +25,13 @@ from urllib.parse import unquote
 from aiohttp import web
 from loguru import logger
 
-from flashdreams.runtime_v2.serving.extensions import (
-    register_http_extension,
-    unregister_http_extension,
-)
-
+from .extensions import register_http_extension, unregister_http_extension
 from .game_renderer import STANDALONE_HOST, registered_game_slugs
-from .import_game import GameImportError, _SLUG, games_root, import_game
+from .import_game import _SLUG, GameImportError, games_root, import_game
 from .session import browser_metrics_snapshot, request_game_switch, request_home
 
 EXTENSION_NAME = "game2v"
 _STATIC = Path(__file__).resolve().parent / "static"
-_HOST = Path(__file__).resolve().parents[4] / "games" / "host"
 
 _bound_session: Any | None = None
 
@@ -65,7 +65,9 @@ def _public_games(current: str) -> dict[str, Any]:
                 "description": entry.get("description") or "",
                 "host": entry.get("host") or "ported",
                 "controls": list(entry.get("controls") or ()),
-                "cover": f"files/{slug}/{entry['cover']}" if entry.get("cover") else None,
+                "cover": f"files/{slug}/{entry['cover']}"
+                if entry.get("cover")
+                else None,
                 "source": source.get("skill") or "",
                 "restart": list(entry.get("restart_keys") or ()),
                 "current": slug == current,
@@ -83,7 +85,7 @@ def _rewrite_play_page(slug: str, html: str, entry: dict[str, Any]) -> str:
         return html
     return html.replace(
         '<script type="module" src="/shared/host/play-page.js"></script>',
-        f'<script>window.gameSlug={json.dumps(slug)}</script>'
+        f"<script>window.gameSlug={json.dumps(slug)}</script>"
         '<script type="module" src="/ext/game2v/host/play-page.js"></script>',
     )
 
@@ -115,17 +117,23 @@ async def handle_game2v(request: web.Request, tail: str) -> web.StreamResponse:
             content_type="text/javascript",
         )
     if tail.startswith("host/"):
-        path = _safe_file(_HOST, tail[len("host/") :])
+        path = _safe_file(_root() / "host", tail[len("host/") :])
         if path is None:
             raise web.HTTPNotFound()
         return web.Response(body=path.read_bytes(), content_type=_content_type(path))
     if tail == "games" and request.method == "GET":
-        current = _session_state(session).config.game_slug if session is not None else ""
+        current = (
+            _session_state(session).config.game_slug if session is not None else ""
+        )
         body = _public_games(current)
         body["started"] = _started(session)
         return web.json_response(body)
     if tail == "metrics" and request.method == "GET":
-        snapshot = browser_metrics_snapshot(_session_state(session)) if session is not None else None
+        snapshot = (
+            browser_metrics_snapshot(_session_state(session))
+            if session is not None
+            else None
+        )
         if snapshot is None:
             return web.json_response({"model": None})
         sampled_at = float(snapshot.pop("sampled_at"))
@@ -317,7 +325,9 @@ body { display: block !important; position: relative !important; min-width: 0 !i
     # variants without changing the game source.
     html = html.replace("</body>", f"{preview_script}</body>", 1)
     # The authoring recorder only exists on the skill's dev server.
-    html = html.replace('<link rel="stylesheet" href="/shared/recorder/recorder.css">', "")
+    html = html.replace(
+        '<link rel="stylesheet" href="/shared/recorder/recorder.css">', ""
+    )
     return web.Response(text=html, content_type="text/html")
 
 
@@ -353,7 +363,7 @@ def _handle_files(rel: str) -> web.Response:
     rel = unquote(rel).lstrip("/")
     root = _root()
     if rel.startswith("host/"):
-        path = _safe_file(_HOST, rel[len("host/") :])
+        path = _safe_file(_root() / "host", rel[len("host/") :])
     else:
         path = _safe_file(root, rel)
     if path is None:

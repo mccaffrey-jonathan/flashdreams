@@ -1,4 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """CPU tests for the Game2V web panel and mid-session game switch."""
 
 from __future__ import annotations
@@ -15,14 +19,10 @@ import torch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cam2v import Cam2VConditioning
-from PIL import Image
-
-from flashdreams.runtime_v2.serving.extensions import (
+from eden.apps.game2v.extensions import (
     serve_extension_manifest,
     unregister_http_extension,
 )
-from flashdreams.runtime_v2.session_desc import SessionDesc
-
 from eden.apps.game2v.game_timeline import GameTimeline
 from eden.apps.game2v.panel import handle_game2v, register_game2v_panel
 from eden.apps.game2v.session import (
@@ -36,6 +36,9 @@ from eden.apps.game2v.session import (
     request_game_switch,
     request_home,
 )
+from PIL import Image
+
+from flashdreams.runtime_v2.session_desc import SessionDesc
 
 pytestmark = pytest.mark.ci_cpu
 
@@ -67,7 +70,9 @@ def _state(slug: str = "tracer", *, cover: Path | None = None) -> Game2VModelSta
     cover = cover or Path("/tmp/old.png")
     state = Game2VModelState.__new__(Game2VModelState)
     state.config = _config(slug, cover)
-    state.session_desc = SessionDesc(video_width=64, video_height=64, frames_per_second_for_step=16)
+    state.session_desc = SessionDesc(
+        video_width=64, video_height=64, frames_per_second_for_step=16
+    )
     state.pending_game_slug = None
     state.pending_game_restart = False
     state.pending_home = False
@@ -93,7 +98,7 @@ def _state(slug: str = "tracer", *, cover: Path | None = None) -> Game2VModelSta
     state.last_generate_wall_s = 0.4
     state.control_stream = SimpleNamespace(reset=lambda: None)
     state.postprocess_stream = None
-    state.event_buffer = None
+    state.live_input = None
     state.input_timeline = SimpleNamespace(reset=lambda start_s=0.0: None)
     state.keyboard_track = SimpleNamespace(reset=lambda: None)
     state.pose_integrator = SimpleNamespace(reset=lambda: None)
@@ -141,7 +146,9 @@ def test_extensions_manifest_lists_panel_script(isolated_extension):
     asyncio.run(_with_client(body))
 
 
-def test_panel_lists_registered_games_and_rewrites_play_page(isolated_extension):
+def test_panel_lists_registered_games_and_rewrites_play_page(
+    isolated_extension, real_games_root
+):
     session = SimpleNamespace(model_loop=SimpleNamespace(state=_state("ember-den")))
     register_game2v_panel(session)
 
@@ -174,7 +181,7 @@ def test_panel_lists_registered_games_and_rewrites_play_page(isolated_extension)
     asyncio.run(_with_client(body))
 
 
-def test_panel_switch_sets_pending_slug(isolated_extension):
+def test_panel_switch_sets_pending_slug(isolated_extension, fake_games_root):
     state = _state("ember-den")
     session = SimpleNamespace(model_loop=SimpleNamespace(state=state))
     register_game2v_panel(session)
@@ -191,7 +198,9 @@ def test_panel_switch_sets_pending_slug(isolated_extension):
         assert same.status == 200
         assert state.pending_game_slug is None
         # "Play again" rewinds even though the slug has not changed.
-        again = await client.post("/ext/game2v/switch", json={"slug": "ember-den", "restart": True})
+        again = await client.post(
+            "/ext/game2v/switch", json={"slug": "ember-den", "restart": True}
+        )
         assert again.status == 200
         assert state.pending_game_slug == "ember-den"
         assert state.pending_game_restart is True
@@ -199,7 +208,7 @@ def test_panel_switch_sets_pending_slug(isolated_extension):
     asyncio.run(_with_client(body))
 
 
-def test_panel_home_rearms_the_gate(isolated_extension):
+def test_panel_home_rearms_the_gate(isolated_extension, fake_games_root):
     state = _state("tracer")
     state.config = replace(state.config, wait_for_start=True)
     state.start_requested = True
@@ -232,8 +241,11 @@ def test_panel_metrics_reports_completed_chunk_and_clears_on_switch(isolated_ext
         empty = await client.get("/ext/game2v/metrics")
         assert await empty.json() == {"model": None}
 
-        _publish_browser_metrics(state, {"chunk_fps": 12.5, "model_step_wall_s": 2.0}, epoch=0)
+        _publish_browser_metrics(
+            state, {"chunk_fps": 12.5, "model_step_wall_s": 2.0}, epoch=0
+        )
         snapshot = browser_metrics_snapshot(state)
+        assert snapshot is not None
         assert snapshot["slug"] == "tracer"
         snapshot["chunk_fps"] = 0  # A caller cannot mutate the published result.
         response = await client.get("/ext/game2v/metrics")
@@ -243,7 +255,9 @@ def test_panel_metrics_reports_completed_chunk_and_clears_on_switch(isolated_ext
         assert model["age_s"] >= 0
 
         request_game_switch(state, "freeze")
-        _publish_browser_metrics(state, {"chunk_fps": 9.0, "model_step_wall_s": 1.0}, epoch=0)
+        _publish_browser_metrics(
+            state, {"chunk_fps": 9.0, "model_step_wall_s": 1.0}, epoch=0
+        )
         cleared = await client.get("/ext/game2v/metrics")
         assert await cleared.json() == {"model": None}
 
@@ -260,7 +274,9 @@ def test_switch_game_rewinds_rollout_and_changes_slug(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setitem(sys.modules, "eden.apps.game2v.game14b", fake)
-    monkeypatch.setattr("eden.apps.game2v.session.is_distributed_initialized", lambda: False)
+    monkeypatch.setattr(
+        "eden.apps.game2v.session.is_distributed_initialized", lambda: False
+    )
     state = _state("tracer", cover=cover)
     closed = []
     state.game_capture = SimpleNamespace(close=lambda: closed.append(True))
@@ -299,7 +315,9 @@ def test_switch_game_rewinds_rollout_and_changes_slug(tmp_path, monkeypatch):
 
 def _gate_state(monkeypatch, *, started):
     """A started session whose gate is armed, with the rollout state it rewinds."""
-    monkeypatch.setattr("eden.apps.game2v.session.is_distributed_initialized", lambda: False)
+    monkeypatch.setattr(
+        "eden.apps.game2v.session.is_distributed_initialized", lambda: False
+    )
     state = _state("tracer")
     state.config = replace(state.config, wait_for_start=True)
     state.started = started
@@ -332,8 +350,12 @@ def test_start_gate_follows_the_broadcast_not_the_local_flag(monkeypatch):
     # A rank whose own flags say "keep going" must still stop when the
     # broadcast says so, or it would generate while its peers wait.
     state = _gate_state(monkeypatch, started=True)
-    monkeypatch.setattr("eden.apps.game2v.session.is_distributed_initialized", lambda: True)
-    monkeypatch.setattr("eden.apps.game2v.session.broadcast_step_gate", lambda decision: True)
+    monkeypatch.setattr(
+        "eden.apps.game2v.session.is_distributed_initialized", lambda: True
+    )
+    monkeypatch.setattr(
+        "eden.apps.game2v.session.broadcast_step_gate", lambda decision: True
+    )
     assert state.pending_home is False
     assert _enter_start_gate(state) is True
 
@@ -342,7 +364,9 @@ def test_start_gate_is_off_without_wait_for_start(monkeypatch):
     # Without the flag the gate never engages, and costs no collective.
     state = _gate_state(monkeypatch, started=False)
     state.config = replace(state.config, wait_for_start=False)
-    monkeypatch.setattr("eden.apps.game2v.session.is_distributed_initialized", lambda: True)
+    monkeypatch.setattr(
+        "eden.apps.game2v.session.is_distributed_initialized", lambda: True
+    )
     monkeypatch.setattr(
         "eden.apps.game2v.session.broadcast_step_gate",
         lambda decision: pytest.fail("the gate must not broadcast when it is off"),

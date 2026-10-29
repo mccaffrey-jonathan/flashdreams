@@ -1,4 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
+
 """Generic Game2V HUD envelope.
 
 The envelope forwards ``state`` verbatim; the only field the runtime reads is
@@ -9,7 +13,10 @@ decides when a rollout pauses.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
+
+from flashdreams.api_v2.user_input_event import UserInputEvent
 
 GAME_UI_MESSAGE_TYPE = "game_ui"
 GAME_UI_ACTION_CHANNEL = "game_ui"
@@ -33,6 +40,26 @@ DIALOG_FLAG_FIELDS = ("helpOpen", "paused")
 the flag is what holds generation; ``probe()`` routes the resume key to the
 game's ``handleUiAction`` because no simulation tick runs while held.
 """
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class GameUIActionEvent(UserInputEvent):
+    """A HUD overlay button pressed in the browser (a ``client_action`` message).
+
+    The game page owns the action vocabulary: ``restart`` presses the game's own
+    restart key, anything else goes to its ``handleUiAction``.
+    """
+
+    @classmethod
+    def get_type_name(cls) -> str:
+        """Return the event type name (namespaced: core has no such event)."""
+        return "game2v_client_action"
+
+    action: str
+    """Action name the overlay element declared in ``data-game-action``."""
+
+    channel: str = ""
+    """Overlay channel; ``""`` or :data:`GAME_UI_ACTION_CHANNEL` reach the game."""
 
 
 def is_dialog_open(state: Mapping[str, Any] | None) -> bool:
