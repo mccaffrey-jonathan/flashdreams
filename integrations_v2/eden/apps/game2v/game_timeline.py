@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Literal
@@ -71,6 +72,10 @@ class GameChunkPacket:
     simulation_tick_end: int
     frames: tuple[GameFramePacket, ...]
     input_events: tuple[GameInputEvent, ...] = ()
+    render_stats: Mapping[str, float] | None = None
+    """How the render of this chunk went, once rendered: ``time.perf_counter``
+    stamps (``submitted_at``, ``started_at``, ``finished_at``) and durations in
+    seconds (``eval_s``, ``decode_s``, ``sleep_s``, ``resize_s``)."""
 
 
 class GameInputRouter:

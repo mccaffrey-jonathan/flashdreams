@@ -180,6 +180,10 @@ class Game2VSessionConfig:
     side_by_side: bool = False
     """Present the proxy frame left of the generated frame."""
 
+    capture_size: tuple[int, int] | None = None
+    """Browser ``(width, height)`` the live game renders at, upscaled to the model
+    size; ``None`` renders at the model size."""
+
     register_panel: bool = False
     """Mount the ``/ext/game2v`` browser panel (an integration WebRTC window only)."""
 
@@ -437,6 +441,9 @@ class Game2VModelState:
     """Number of completed autoregressive model steps."""
 
     frames_generated: int = 0
+    frames_written: int = 0
+    """Output frames written this session; unlike ``frames_generated``, a
+    restart does not rewind it."""
     """Number of generated video frames on the virtual camera clock."""
 
     anchor_frame: torch.Tensor | None = None
@@ -515,6 +522,8 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
             # wait is charged to this step and slows presentation cadence for a
             # few frames after it. Upgrade: a core hook (fork api_v2/loop.py).
             _await_start(state, self._shutdown_event)
+            if self._shutdown_event.is_set():
+                return []
             state.started = True
         _apply_pending_game_switch(state)
         step_started_at = time.perf_counter()
@@ -555,6 +564,8 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
             # the start gate above for the step-time consequence.
             held_s = _await_dialog_dismissed(state, self._shutdown_event)
             state.steady_held_s += held_s
+            if self._shutdown_event.is_set():
+                return []
             if state.blocks_generated == 0:
                 # The browser launches lazily inside this first capture, and the
                 # first denoising step traces the compiled DiT, so both are far
@@ -570,6 +581,10 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         capture_started_at = time.perf_counter()
         state.last_game_chunk = _collect_game_chunk(state)
         game_capture_wall_s = time.perf_counter() - capture_started_at
+        stamps = {"start": step_started_at, "collected": time.perf_counter()}
+        # Read now: the successor render submitted below overwrites these.
+        render_eval_s = getattr(state.game_capture, "last_evaluate_s", 0.0)
+        render_decode_s = getattr(state.game_capture, "last_decode_s", 0.0)
         # A restart resets the game in place, so this chunk ends on a new round
         # and its renders belong to that round. They cannot condition the rollout
         # that has been generating the previous one, so the rollout starts over:
@@ -580,6 +595,9 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         if _restart_rollout(state):
             ar_index = state.ar_index
             frame_count = int(state.pipeline.get_num_output_frames(ar_index))
+            # The collected chunk straddles the reset and is dropped; its events
+            # must not leak into the new rollout's opening prompt.
+            state.last_game_chunk = None
             state.cache = state.pipeline.initialize_cache(
                 text=[_opening_prompt(state, conditioning.prompt)],
                 image=_anchor_frame(state),
@@ -658,8 +676,10 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         # submitted, one step ago, so in steady state this is a handoff rather
         # than a wait.
         step_input = camera_input
+        stamps["successor_submitted"] = time.perf_counter()
         if state.control_stream is not None:
             step_input = state.control_stream.take(ar_index)
+        stamps["condition_ready"] = time.perf_counter()
         # The chunk just collected is the previous chunk's simulation, so its
         # events belong to the chunk generated below. Composed before the
         # generate rather than after it, because a per-chunk prompt has to be
@@ -769,6 +789,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         state.blocks_generated += 1
         state.ar_index += 1
         state.frames_generated += frame_count
+        state.frames_written += frame_count
         metrics.update(
             {
                 "model_step_wall_s": model_step_wall_s,
@@ -798,8 +819,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                     elapsed_s=model_step_wall_s,
                 )
             )
-        evaluate_s = getattr(state.game_capture, "last_evaluate_s", 0.0)
-        decode_s = getattr(state.game_capture, "last_decode_s", 0.0)
+        evaluate_s, decode_s = render_eval_s, render_decode_s
         _write_chunk_log(
             state,
             step_index=step_index,
@@ -811,10 +831,18 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
                 "render_decode": decode_s,
                 "prompt_encode": generate_wall_s
                 - (model_completed_at - generate_started_at),
+                "condition_wait": stamps["condition_ready"]
+                - stamps["successor_submitted"],
                 "generate": generate_wall_s,
                 "model_loop": step_completed_at - step_started_at,
             },
             chunk_fps=float(metrics["chunk_fps"]),
+            stamps={
+                **stamps,
+                "generate_start": generate_started_at,
+                "generate_end": model_completed_at,
+                "end": step_completed_at,
+            },
         )
         if state.config.log_model_timing:
             phase = "warmup" if ar_index < state.config.warmup_blocks else "steady"
@@ -1227,6 +1255,10 @@ def _encode_chunk_prompt(state: Game2VModelState) -> None:
             "dynamic_prompt is enabled but the pipeline has no encode_text(); "
             "only the proxy-DINO 14B pipeline supports per-chunk prompts."
         )
+    if state.cache is None:
+        # Composed while the rollout cache is being (re)built (a restart): that
+        # cache is built from the opening text, so there is nothing to swap yet.
+        return
     embeddings = None
     encodes = int(os.environ.get("RANK", "0")) == 0
     encode_started_at = time.perf_counter()
@@ -1511,6 +1543,8 @@ def _end_rollout(state: Game2VModelState) -> None:
         state.game_capture = None
     state.pending_game_frames.clear()
     state.dialog_held = False
+    # A new Chromium page starts at tick 0; a kept timeline would fast-forward it.
+    state.game_timeline = GameTimeline(state.config.game_slug)
     state.cache = None
     state.anchor_frame = None
     state.prompt_events.clear()
@@ -1811,11 +1845,16 @@ def _begin_game_chunk(
         else:
             from .game_renderer import GameCaptureWorker
 
+            capture_size = getattr(state.config, "capture_size", None) or (
+                width,
+                height,
+            )
             state.game_capture = GameCaptureWorker(
                 state.config.game_slug,
-                width=width,
-                height=height,
+                width=capture_size[0],
+                height=capture_size[1],
                 autopilot=getattr(state.config, "autopilot", None),
+                output_size=(width, height),
             )
     pending = state.game_capture.submit(
         chunk,
@@ -1871,11 +1910,16 @@ def _feed_browser(state: Game2VModelState, paired: list, *, generation: int) -> 
     }
     # The text this chunk was conditioned on; the client replaces its panel
     # wholesale with each chunk's set.
+    static = state.static_prompt or state.opening_prompt
+    if getattr(getattr(state, "config", None), "proxy_video", None) is not None:
+        # A replay's chunk text is its --prompts-json schedule entry, not a
+        # static prompt plus event lines.
+        static = state.active_prompt or static
     messages[base + 1].insert(
         0,
         {
             "type": PROMPT_MESSAGE_TYPE,
-            "static": state.static_prompt or state.opening_prompt,
+            "static": static,
             "events": list(state.active_event_lines),
         },
     )
@@ -1913,11 +1957,13 @@ def _write_chunk_log(
     frame_count: int,
     timings_s: Mapping[str, float],
     chunk_fps: float,
+    stamps: Mapping[str, float] | None = None,
 ) -> None:
     """Append one JSON line describing the chunk just generated to ``--chunk-log``.
 
-    ``first_frame`` counts output frames since the rollout (re)started, so it
-    indexes the recorded video. ``condition_frames`` are the capture-frame ids
+    ``first_frame`` counts output frames written this session (never rewound by a
+    restart), so it indexes the output and ``--record-proxy`` videos;
+    ``rollout_frame`` is the offset within the current rollout. ``condition_frames`` are the capture-frame ids
     (1-based, never rewound) of the frames the proxy encoder saw; in a replay
     they are the video frame index plus one.
     """
@@ -1934,7 +1980,8 @@ def _write_chunk_log(
         "step": step_index,
         "chunk": ar_index,
         "frames": frame_count,
-        "first_frame": state.frames_generated - frame_count,
+        "first_frame": state.frames_written - frame_count,
+        "rollout_frame": state.frames_generated - frame_count,
         "condition_frames": [
             frame.game_frame_id for frame in frames if frame.condition_frame is not None
         ],
@@ -1945,6 +1992,10 @@ def _write_chunk_log(
         "timings_ms": {name: value * 1_000.0 for name, value in timings_s.items()},
         "chunk_fps": chunk_fps,
         "game_state": frames[-1].ui_state if frames else None,
+        # time.perf_counter() stamps, comparable across threads: the step's
+        # own, and the render of the chunk it consumed (begun a step earlier).
+        "stamps": dict(stamps or {}),
+        "render": dict(chunk.render_stats or {}) if chunk is not None else {},
     }
     state.chunk_log.write(json.dumps(record, default=str) + "\n")
     state.chunk_log.flush()

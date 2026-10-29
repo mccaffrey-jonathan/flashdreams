@@ -456,6 +456,7 @@ body{display:block!important}#view-big{position:absolute!important;width:100vw!i
         started = time.perf_counter()
         evaluate_s = 0.0
         decode_s = 0.0
+        sleep_s = 0.0
         frames: list[GameFramePacket] = []
         frame_count = len(chunk.frames)
         for index, packet in enumerate(chunk.frames):
@@ -480,7 +481,7 @@ body{display:block!important}#view-big{position:absolute!important;width:100vw!i
                 )
             )
             decode_s += time.perf_counter() - decode_started
-            _sleep_until_frame_deadline(
+            sleep_s += _sleep_until_frame_deadline(
                 started_at=started,
                 frame_index=index,
                 frame_count=frame_count,
@@ -488,7 +489,14 @@ body{display:block!important}#view-big{position:absolute!important;width:100vw!i
             )
         self.last_evaluate_s = evaluate_s
         self.last_decode_s = decode_s
-        return replace(chunk, frames=tuple(frames))
+        stats = {
+            "started_at": started,
+            "finished_at": time.perf_counter(),
+            "eval_s": evaluate_s,
+            "decode_s": decode_s,
+            "sleep_s": sleep_s,
+        }
+        return replace(chunk, frames=tuple(frames), render_stats=stats)
 
     def close(self):
         # Each stage runs even if an earlier one fails, so a browser that died
@@ -526,12 +534,24 @@ class GameCaptureWorker:
         height: int = DEFAULT_CAPTURE_HEIGHT,
         games_root: Path | None = None,
         autopilot: Path | None = None,
+        output_size: tuple[int, int] | None = None,
     ) -> None:
+        """
+        Args:
+            slug: Registered game.
+            width: Capture (browser viewport) width.
+            height: Capture (browser viewport) height.
+            games_root: Games directory; ``None`` reads ``EDEN_GAMES_ROOT``.
+            autopilot: Script that plays the game headless, or ``None``.
+            output_size: ``(width, height)`` every captured frame is resized to
+                (bilinear) when the capture is smaller; ``None`` keeps it.
+        """
         self.slug = slug
         self.games_root = games_root
         self.autopilot = autopilot
         self.width = width
         self.height = height
+        self.output_size = None if output_size == (width, height) else output_size
         self.last_evaluate_s = 0.0
         self.last_decode_s = 0.0
         self.webgl_renderer = ""
@@ -550,7 +570,7 @@ class GameCaptureWorker:
     ) -> Future:
         """Queue one chunk capture and return immediately."""
         return self._executor.submit(
-            self._render_chunk, chunk, duration_s, drain_events
+            self._render_chunk, chunk, duration_s, drain_events, time.perf_counter()
         )
 
     def capture(
@@ -570,6 +590,7 @@ class GameCaptureWorker:
         chunk: GameChunkPacket,
         duration_s: float = 0.0,
         drain_events=None,
+        submitted_at: float | None = None,
     ) -> GameChunkPacket:
         if self._renderer is None:
             self._renderer = GameRenderer(
@@ -590,7 +611,15 @@ class GameCaptureWorker:
         )
         self.last_evaluate_s = self._renderer.last_evaluate_s
         self.last_decode_s = self._renderer.last_decode_s
-        return rendered
+        resize_started = time.perf_counter()
+        if self.output_size is not None:
+            rendered = _resize_chunk(rendered, self.output_size)
+        stats = dict(rendered.render_stats or {})
+        if submitted_at is not None:
+            stats["submitted_at"] = submitted_at
+        stats["resize_s"] = time.perf_counter() - resize_started
+        stats["finished_at"] = time.perf_counter()
+        return replace(rendered, render_stats=stats)
 
     def probe(self, *, drain_events=None) -> dict:
         """Poll the live page without advancing its simulation.
@@ -640,13 +669,19 @@ def _sleep_until_frame_deadline(
     duration_s: float,
     now=time.perf_counter,
     sleep=time.sleep,
-) -> None:
-    """Sleep so frame ``frame_index`` finishes at its share of ``duration_s``."""
+) -> float:
+    """Sleep so frame ``frame_index`` finishes at its share of ``duration_s``.
+
+    Returns:
+        Seconds slept (zero when the render is already behind).
+    """
     if duration_s <= 0 or frame_count <= 0:
-        return
+        return 0.0
     remaining = started_at + duration_s * (frame_index + 1) / frame_count - now()
     if remaining > 0:
         sleep(remaining)
+        return remaining
+    return 0.0
 
 
 def _expand_captured_frames(
@@ -677,6 +712,26 @@ def _expand_captured_frames(
             )
         )
     return tuple(frames)
+
+
+def _resize_chunk(chunk: GameChunkPacket, size: tuple[int, int]) -> GameChunkPacket:
+    """Resize every captured frame to ``size`` (bilinear); conditions keep sharing it."""
+    frames = []
+    for frame in chunk.frames:
+        if frame.ui_frame is None:
+            frames.append(frame)
+            continue
+        resized = np.asarray(
+            Image.fromarray(frame.ui_frame).resize(size, Image.Resampling.BILINEAR)
+        )
+        frames.append(
+            replace(
+                frame,
+                ui_frame=resized,
+                condition_frame=resized if frame.condition_frame is not None else None,
+            )
+        )
+    return replace(chunk, frames=tuple(frames))
 
 
 def _decode_data_url(data_url: str) -> np.ndarray:

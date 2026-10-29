@@ -3,31 +3,36 @@
 # SPDX-License-Identifier: Apache-2.0
 # This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
-"""Rank-zero HTTP panel for listing, previewing, importing and switching games.
+"""Rank-zero HTTP panel for listing, previewing and switching games.
 
 Mounted under ``/ext/game2v/``. The aiohttp router is frozen by the time a
 session starts, so registration goes through
 :func:`eden.apps.game2v.extensions.register_http_extension`.
 The browser loads ``panel.js`` from ``/extensions.json``.
+
+The routes are unauthenticated, so the server must stay on localhost or a
+trusted network. State-changing routes additionally require a same-origin JSON
+request (a cross-site page cannot send one without a CORS preflight, which this
+server never answers). Importing a game project is a command-line step
+(``python -m eden.apps.game2v.import_game``); VAST's HTTP import took server
+filesystem paths from the client and is not exposed.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import mimetypes
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote
 
 from aiohttp import web
-from loguru import logger
 
 from .extensions import register_http_extension, unregister_http_extension
 from .game_renderer import STANDALONE_HOST, registered_game_slugs
-from .import_game import _SLUG, GameImportError, games_root, import_game
+from .import_game import _SLUG, games_root
 from .session import browser_metrics_snapshot, request_game_switch, request_home
 
 EXTENSION_NAME = "game2v"
@@ -101,11 +106,45 @@ def _content_type(path: Path) -> str:
     return guessed or "application/octet-stream"
 
 
+def safe_relative_path(rel: str) -> PurePosixPath | None:
+    """``rel`` as a plain relative path, or ``None`` if it could leave its root.
+
+    Checked lexically, before any filesystem call: no drive, UNC or root anchor,
+    no backslash or colon, no ``..``. (``Path.resolve`` on a UNC name would
+    already open a connection to that host on Windows.)
+    """
+    if not rel or "\\" in rel or ":" in rel or "\x00" in rel:
+        return None
+    posix = PurePosixPath(rel)
+    if posix.is_absolute() or PureWindowsPath(rel).anchor or ".." in posix.parts:
+        return None
+    return posix
+
+
 def _safe_file(root: Path, rel: str) -> Path | None:
-    path = (root / rel).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
+    relative = safe_relative_path(rel)
+    if relative is None:
+        return None
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
         return None
     return path
+
+
+def _require_same_origin_json(request: web.Request) -> None:
+    """Refuse state changes a cross-site page could forge.
+
+    A "simple" cross-origin POST (text/plain, form) needs no CORS preflight, so
+    binding to localhost alone does not stop a web page in the operator's
+    browser from sending one. Requiring ``application/json`` forces a preflight
+    this server never grants, and an ``Origin`` other than this server's own is
+    rejected outright.
+    """
+    if request.content_type != "application/json":
+        raise web.HTTPUnsupportedMediaType(reason="Expected application/json.")
+    origin = request.headers.get("Origin")
+    if origin is not None and origin.split("://", 1)[-1] != request.host:
+        raise web.HTTPForbidden(reason="Cross-origin request refused.")
 
 
 async def handle_game2v(request: web.Request, tail: str) -> web.StreamResponse:
@@ -140,11 +179,11 @@ async def handle_game2v(request: web.Request, tail: str) -> web.StreamResponse:
         snapshot["age_s"] = max(0.0, time.monotonic() - sampled_at)
         return web.json_response({"model": snapshot})
     if tail == "switch" and request.method == "POST":
+        _require_same_origin_json(request)
         return await _handle_switch(request, session)
     if tail == "home" and request.method == "POST":
+        _require_same_origin_json(request)
         return _handle_home(session)
-    if tail == "import" and request.method == "POST":
-        return await _handle_import(request, session)
     if tail.startswith("play/"):
         return _handle_play(tail[len("play/") :])
     if tail.startswith("files/"):
@@ -189,49 +228,6 @@ def _handle_home(session: Any) -> web.Response:
         raise web.HTTPConflict(reason="No Game2V session.")
     request_home(_session_state(session))
     return web.json_response({"started": False})
-
-
-async def _handle_import(request: web.Request, session: Any) -> web.Response:
-    try:
-        payload = await request.json()
-    except (json.JSONDecodeError, web.HTTPException) as error:
-        raise web.HTTPBadRequest(reason="Expected a JSON object.") from error
-    if not isinstance(payload, dict):
-        raise web.HTTPBadRequest(reason="Expected a JSON object.")
-    project = payload.get("project")
-    slug = payload.get("slug")
-    if not isinstance(project, str) or not project.strip():
-        raise web.HTTPBadRequest(reason="project path is required.")
-    if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
-        raise web.HTTPBadRequest(reason="slug must be lowercase words joined by '-'.")
-    cover = payload.get("cover")
-    cover_path = Path(cover) if isinstance(cover, str) and cover else None
-
-    def _run() -> dict[str, Any]:
-        # Skip Playwright cover capture in the web path; a missing cover.png
-        # still lets the game register, and a later import can replace it.
-        return import_game(
-            Path(project).expanduser(),
-            slug,
-            cover=cover_path,
-            allow_incomplete=bool(payload.get("allow_incomplete")),
-            replace=bool(payload.get("replace")),
-            capture=lambda *_args, **_kwargs: None,
-        )
-
-    try:
-        entry = await asyncio.to_thread(_run)
-    except GameImportError as error:
-        raise web.HTTPBadRequest(reason=str(error)) from error
-    except FileNotFoundError as error:
-        raise web.HTTPBadRequest(reason=str(error)) from error
-    except Exception as error:
-        logger.opt(exception=True).error("Game2V import failed.")
-        raise web.HTTPInternalServerError(reason=str(error)) from error
-    current = _session_state(session).config.game_slug if session is not None else slug
-    body = _public_games(current)
-    body["imported"] = entry["slug"]
-    return web.json_response(body)
 
 
 def _handle_play(slug: str) -> web.Response:

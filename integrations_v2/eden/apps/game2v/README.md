@@ -65,7 +65,8 @@ flashdreams-run-v2 game2v-eden-world-v2-5b-taehv --mode mp4 \
   --output-path runs/cryo.mp4 --timeout unbound -- \
   --proxy-video samples/cryo-crossing/recording.mp4 \
   --first-frame samples/cryo-crossing/cover.png \
-  --prompt "$(cat samples/cryo-crossing/prompt.txt)" --seed 2026092901 \
+  --prompt "$(python -c "import json; print(json.load(open('samples/cryo-crossing/prompts.json'))['staticPrompt'])")" \
+  --seed 2026092901 \
   --max-frames 117 --record-proxy runs/cryo.proxy.mp4 --side-by-side
 ```
 

@@ -188,6 +188,7 @@ def _chunk_state(tmp_path, *, record=False):
         proxy_recorder=None,
         last_game_chunk=chunk,
         frames_generated=9,
+        frames_written=9,
         encoded_prompt="",
         opening_prompt="A cave.",
         active_event_lines=("A spider rears up.",),

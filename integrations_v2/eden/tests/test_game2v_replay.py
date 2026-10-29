@@ -330,7 +330,7 @@ def test_replay_prompts_json_turns_on_per_chunk_encoding_only_when_text_changes(
         (["--dynamic-prompt"], "--dynamic-prompt does not apply"),
         (["--wait-for-start"], "--wait-for-start does not apply"),
         (["--autopilot"], "--autopilot does not apply"),
-        (["--max-frames", "3"], "--max-frames must be >= 5"),
+        (["--max-frames", "3"], "--max-frames must be >= 9"),
     ],
 )
 def test_replay_rejects_live_only_flags(tmp_path, extra, message):

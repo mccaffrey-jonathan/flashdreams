@@ -4,8 +4,8 @@
 // This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 /**
  * Game2V generation panel. Lists registered games, previews one in an iframe,
- * imports a finished GamePrototypeTurbo project, and asks the next model step
- * to switch the live proxy game.
+ * and asks the next model step to switch the live proxy game. (Importing a
+ * game project is a command-line step: python -m eden.apps.game2v.import_game.)
  */
 const API = "/ext/game2v";
 
@@ -69,8 +69,6 @@ function mount() {
     allow: "autoplay",
     sandbox: "allow-scripts allow-same-origin",
   });
-  const project = el("input", {type: "text", placeholder: "Skill project path", spellcheck: "false"});
-  const slug = el("input", {type: "text", placeholder: "slug", spellcheck: "false"});
   const play = el("iframe", {hidden: "hidden"});
   void play;
 
@@ -120,34 +118,6 @@ function mount() {
     },
   }, "Use as next proxy");
 
-  const importBtn = el("button", {
-    type: "button",
-    onClick: async () => {
-      importBtn.disabled = true;
-      try {
-        setStatus("Importing…");
-        const payload = await json("/import", {
-          method: "POST",
-          headers: {"content-type": "application/json"},
-          body: JSON.stringify({
-            project: project.value.trim(),
-            slug: slug.value.trim(),
-            replace: true,
-            allow_incomplete: true,
-          }),
-        });
-        fill(payload);
-        if (payload.imported) select.value = payload.imported;
-        preview.src = `${API}/play/${encodeURIComponent(select.value)}`;
-        setStatus(`Imported ${payload.imported}.`);
-      } catch (error) {
-        setStatus(error.message, true);
-      } finally {
-        importBtn.disabled = false;
-      }
-    },
-  }, "Import project");
-
   select.addEventListener("change", () => {
     preview.src = `${API}/play/${encodeURIComponent(select.value)}`;
   });
@@ -157,8 +127,6 @@ function mount() {
     el("div", {className: "game2v-row"}, select, switchBtn),
     meta,
     el("div", {className: "game2v-preview"}, preview),
-    el("h2", {}, "Import skill project"),
-    el("div", {className: "game2v-row"}, project, slug, importBtn),
     status,
   );
   refresh();

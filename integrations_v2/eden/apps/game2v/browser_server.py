@@ -47,6 +47,7 @@ from .extensions import dispatch_extension, serve_extension_manifest
 from .game_hud import GAME_UI_MESSAGE_TYPE, GameUIActionEvent
 from .game_renderer import GamesRootError, games_root
 from .game_ui import Game2VFrame
+from .panel import safe_relative_path
 from .session import PROMPT_MESSAGE_TYPE
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -87,8 +88,14 @@ def _games_root_or_404() -> Path:
 
 
 def _file_response(path: Path, *, root: Path) -> web.Response:
+    """Serve ``path`` if it stays inside ``root``.
+
+    Client-controlled path parts must already have passed
+    :func:`~eden.apps.game2v.panel.safe_relative_path` (no anchor, ``..`` or
+    backslash), so ``resolve`` never sees a UNC name.
+    """
     resolved = path.resolve()
-    if not resolved.is_relative_to(root) or not resolved.is_file():
+    if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
         raise web.HTTPNotFound()
     if resolved.suffix in {".js", ".mjs"}:
         content_type = "text/javascript"
@@ -203,7 +210,10 @@ class EdenWebRTCServer(WebRTCServer):
 
     async def _serve_game_assets(self, request: web.Request) -> web.Response:
         root = _games_root_or_404()
-        return _file_response(root / "assets" / request.match_info["tail"], root=root)
+        tail = safe_relative_path(request.match_info["tail"])
+        if tail is None:
+            raise web.HTTPNotFound()
+        return _file_response(root / "assets" / tail, root=root)
 
     async def _serve_registered_game(self, request: web.Request) -> web.Response:
         """Serve ``<slug>/...`` of a registered game (or ``host``/``runtime``)."""
@@ -215,7 +225,10 @@ class EdenWebRTCServer(WebRTCServer):
         slugs = {entry.get("slug") for entry in registry.get("games", [])}
         if slug not in slugs and slug not in {"host", "runtime"}:
             raise web.HTTPNotFound()
-        return _file_response(root / slug / request.match_info["tail"], root=root)
+        tail = safe_relative_path(request.match_info["tail"])
+        if tail is None:
+            raise web.HTTPNotFound()
+        return _file_response(root / slug / tail, root=root)
 
     def write(self, result: StepResult) -> None:
         """Queue the frame, then the messages that describe it.

@@ -27,7 +27,7 @@ from flashdreams.infra.postprocess import (
     VideoSpec,
 )
 from flashdreams.plugins.registry import discover_postprocess_presets
-from flashdreams.runtime_v2.session_desc import SessionDesc
+from flashdreams.runtime_v2.session_desc import BackpressureMode, SessionDesc
 from flashdreams.runtime_v2.video_tensor import VideoTensorLayout
 
 from .defaults import Cam2VApplicationDefaults, Cam2VConditioning
@@ -75,6 +75,7 @@ class Game2VApplication(IApplication):
         self._record_proxy: Path | None = None
         self._chunk_log: Path | None = None
         self._side_by_side = False
+        self._capture_size: tuple[int, int] | None = None
 
     def resolve_client_window_mode(self, mode: str) -> str:
         """Serve ``webrtc`` through Game2V's own browser window when it is installed.
@@ -88,7 +89,18 @@ class Game2VApplication(IApplication):
         if mode == "webrtc" and eden_webrtc_mode_installed():
             mode = EDEN_WEBRTC_MODE
         self._client_window_mode = mode
+        self._check_wait_for_start()
         return mode
+
+    def _check_wait_for_start(self) -> None:
+        """``--wait-for-start`` is released only by the eden-webrtc game panel."""
+        from .browser import EDEN_WEBRTC_MODE
+
+        if self._wait_for_start and self._client_window_mode != EDEN_WEBRTC_MODE:
+            raise ValueError(
+                "--wait-for-start waits for a game to be picked in the eden-webrtc "
+                "page (/ext/game2v/switch); use it with --mode webrtc."
+            )
 
     @property
     def pipeline_config(self) -> Any:
@@ -159,6 +171,16 @@ class Game2VApplication(IApplication):
                 "the dynamicPrompts overlapping its frames; the text encoder "
                 "stays resident when the prompt changes. Default: the static "
                 "--prompt for every chunk."
+            ),
+        )
+        parser.add_argument(
+            "--capture-size",
+            default=None,
+            metavar="WxH",
+            help=(
+                "Render the live game at this size and upscale it to the model "
+                "size (bilinear). Cheaper for the browser; the condition encoder "
+                "resamples to 480x832 anyway. Default: the model size."
             ),
         )
         record = parser.add_argument_group("recording")
@@ -405,6 +427,9 @@ class Game2VApplication(IApplication):
                 f"choose one of: {', '.join(slugs)}."
             )
         self._proxy_video = self._proxy_frames = self._prompt_schedule = None
+        self._capture_size = (
+            _parse_size(args.capture_size) if args.capture_size else None
+        )
         self._autopilot = None
         if args.autopilot is not None:
             script = (
@@ -430,13 +455,22 @@ class Game2VApplication(IApplication):
             raise ValueError("--autopilot does not apply to --proxy-video.")
         if not args.proxy_video.is_file():
             raise FileNotFoundError(f"--proxy-video is missing: {args.proxy_video}")
-        if args.max_frames is not None and args.max_frames < 5:
-            raise ValueError("--max-frames must be >= 5.")
+        len_t = int(self._pipeline_config.diffusion_model.transformer.len_t)
+        # One whole chunk: len_t latent frames = 4 * len_t - 3 video frames.
+        min_frames = 4 * len_t - 3
+        if args.max_frames is not None and args.max_frames < min_frames:
+            raise ValueError(
+                f"--max-frames must be >= {min_frames} (one {len_t}-latent chunk)."
+            )
         num_frames = recording_frame_count(
             args.proxy_video, fps=self.defaults.fps, max_frames=args.max_frames
         )
-        len_t = int(self._pipeline_config.diffusion_model.transformer.len_t)
         latent_frames = (num_frames - 1) // 4 + 1
+        if latent_frames < len_t:
+            raise ValueError(
+                f"{args.proxy_video} gives {num_frames} frames; a replay needs at "
+                f"least {min_frames} (one {len_t}-latent chunk)."
+            )
         if latent_frames % len_t:
             whole = latent_frames // len_t * len_t
             raise ValueError(
@@ -450,6 +484,9 @@ class Game2VApplication(IApplication):
         if args.total_blocks is None:
             args.total_blocks = latent_frames // len_t
         self._prompt_schedule = None
+        if not args.prompt and args.prompt_path:
+            # Resolve the file here so --prompts-json composes from it as well.
+            args.prompt = Path(args.prompt_path).read_text(encoding="utf-8").strip()
         if args.prompts_json is not None:
             self._prompt_schedule = load_chunk_prompts(
                 args.prompts_json,
@@ -482,6 +519,21 @@ class Game2VApplication(IApplication):
         if input_values is None:
             raise RuntimeError(
                 f"{type(self).__name__}.init() must run before create_session()."
+            )
+        # Programmatic runners may skip resolve_client_window_mode.
+        self._check_wait_for_start()
+        from .browser import EDEN_WEBRTC_MODE
+
+        if (
+            self._client_window_mode == EDEN_WEBRTC_MODE
+            and session_desc.backpressure_mode != BackpressureMode.BLOCK
+        ):
+            # ponytail: the browser feed keys HUD/prompt messages by a running
+            # presented-frame count, which drifts once a chunk is dropped.
+            # Upgrade: key them by (generation, step_index, frame) instead.
+            raise ValueError(
+                "The eden-webrtc page needs --backpressure-mode block: its HUD "
+                "and prompt panels follow the presented frames one for one."
             )
         self._validate_layout(session_desc)
         if (
@@ -573,9 +625,11 @@ class Game2VApplication(IApplication):
                 record_proxy=self._record_proxy,
                 chunk_log=self._chunk_log,
                 side_by_side=self._side_by_side,
+                capture_size=self._capture_size,
                 # The /ext/game2v panel needs an integration-owned browser
                 # window; the built-in modes have nowhere to mount it.
-                register_panel=self._client_window_mode == "eden-webrtc",
+                register_panel=self._client_window_mode == "eden-webrtc"
+                and self._proxy_video is None,
             ),
             use_ui=self._use_ui,
         )
@@ -616,6 +670,7 @@ class Game2VApplication(IApplication):
                 )
         if args.warmup_blocks < 0:
             raise ValueError("--warmup-blocks must be >= 0.")
+
         if args.prompt_event_chunks <= 0:
             raise ValueError("--prompt-event-chunks must be > 0.")
         if args.dynamic_prompt and self.defaults.control_stream_factory is None:
@@ -658,6 +713,17 @@ class Game2VApplication(IApplication):
                 f"Frame dimensions must be multiples of {ratio}, got "
                 f"{session_desc.video_width}x{session_desc.video_height}."
             )
+
+
+def _parse_size(value: str) -> tuple[int, int]:
+    """Parse ``WxH`` into ``(width, height)``: positive, even (for yuv420 output)."""
+    width, separator, height = value.lower().partition("x")
+    if not separator or not width.isdigit() or not height.isdigit():
+        raise ValueError(f"--capture-size must look like 832x464, got {value!r}.")
+    size = (int(width), int(height))
+    if min(size) <= 0 or any(side % 2 for side in size):
+        raise ValueError(f"--capture-size needs positive even sides, got {value!r}.")
+    return size
 
 
 def _apply_compile_flag(pipeline_config: Any, enabled: bool) -> Any:
