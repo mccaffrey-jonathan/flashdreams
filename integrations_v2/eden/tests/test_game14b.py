@@ -1,11 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """CPU tests for the proxy-DINO conditioned AR 14B Game2V preset."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import torch
@@ -21,19 +24,29 @@ from eden.config import (
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B,
     PIPELINE_GAME2V_EDEN_WORLD_V2_14B_TAEHV,
 )
+from eden.impl.diffusion import EdenDiffusionModelConfig
 from eden.impl.game14b.checkpoint import game14b_dit_state_dict_from_diffusers
 from eden.impl.game14b.control_stream import _stack_condition_frames
 from eden.impl.game14b.network import (
     GAME14B_CONTROL_DIM,
     GAME14B_I2V_CHANNELS,
 )
+from eden.impl.game14b.transformer import Game14BTransformerConfig
+from eden.impl.scheduler import EdenFlowMatchSchedulerConfig
 
 pytestmark = pytest.mark.ci_cpu
+
+# Typed views of the 14B config (the dataclass fields are typed as the bases).
+_DIFFUSION = cast(
+    EdenDiffusionModelConfig, PIPELINE_GAME2V_EDEN_WORLD_V2_14B.diffusion_model
+)
+_TRANSFORMER = cast(Game14BTransformerConfig, _DIFFUSION.transformer)
+_SCHEDULER = cast(EdenFlowMatchSchedulerConfig, _DIFFUSION.scheduler)
 
 
 def test_channel_layout_matches_the_checkpoint_patch_embedding() -> None:
     """1060 input channels: 16 noisy + 4 mask + 16 condition + 1024 control."""
-    network = PIPELINE_GAME2V_EDEN_WORLD_V2_14B.diffusion_model.transformer.network
+    network = _TRANSFORMER.network
     assert GAME14B_I2V_CHANNELS == 36
     assert network.in_dim == GAME14B_I2V_CHANNELS + GAME14B_CONTROL_DIM == 1060
     assert network.control_dim == GAME14B_CONTROL_DIM
@@ -44,9 +57,9 @@ def test_channel_layout_matches_the_checkpoint_patch_embedding() -> None:
 def test_sampling_matches_the_sgf_v4_14b_schedule() -> None:
     """CFG off, 4-step distilled schedule at shift 3.0, sink 6 + window 12."""
     pipeline = PIPELINE_GAME2V_EDEN_WORLD_V2_14B
-    transformer = pipeline.diffusion_model.transformer
-    scheduler = pipeline.diffusion_model.scheduler
-    model = pipeline.diffusion_model
+    transformer = _TRANSFORMER
+    scheduler = _SCHEDULER
+    model = _DIFFUSION
     # CFG off: one conditional KV stream, the control encoded once per chunk.
     assert transformer.guidance_scale == 1.0
     assert transformer.len_t == GAME2V_LEN_T == 3
@@ -126,7 +139,7 @@ def test_condition_keeps_global_time_after_attention_window_fills() -> None:
     encoder = _encoder(vae)
     cover = torch.ones(1, 3, 8, 8)
     control = torch.zeros(3, 1024, 2, 2)
-    cache = Game14BCtrlEncoderCache(vae={})
+    cache = Game14BCtrlEncoderCache(vae=cast(Any, {}))
     out = encoder(Game14BCtrlInput(image=cover, control=control), 0, cache)
     assert vae.calls == [(0, 1), (0, 9)]
     assert torch.equal(vae.inputs[1][:1], cover)
@@ -140,7 +153,7 @@ def test_condition_keeps_global_time_after_attention_window_fills() -> None:
         ]
         assert torch.all(out.i2v.mask == 0)
     assert len(vae.calls) == 9
-    restart = Game14BCtrlEncoderCache(vae={})
+    restart = Game14BCtrlEncoderCache(vae=cast(Any, {}))
     encoder(Game14BCtrlInput(image=cover, control=control), 0, restart)
     # Cover is reused; the grey stream starts from its own fresh rollout cache.
     assert vae.calls[-1] == (0, 9)
@@ -155,7 +168,7 @@ def test_later_chunk_before_ar0_is_rejected() -> None:
         encoder(
             Game14BCtrlInput(image=None, control=torch.zeros(3, 1024, 1, 1)),
             2,
-            Game14BCtrlEncoderCache(vae={}),
+            Game14BCtrlEncoderCache(vae=cast(Any, {})),
         )
 
 
@@ -174,7 +187,7 @@ def test_restart_reuses_the_one_shot_encodings() -> None:
             self._image_cache = (image, torch.zeros(1, 2))
             return SimpleNamespace(
                 image=image,
-                encoder_cache=Game14BCtrlEncoderCache(vae={}),
+                encoder_cache=Game14BCtrlEncoderCache(vae=cast(Any, {})),
                 transformer_cache=SimpleNamespace(),
             )
 
@@ -186,7 +199,7 @@ def test_restart_reuses_the_one_shot_encodings() -> None:
                 return None
             return SimpleNamespace(
                 image=image,
-                encoder_cache=Game14BCtrlEncoderCache(vae={}),
+                encoder_cache=Game14BCtrlEncoderCache(vae=cast(Any, {})),
                 transformer_cache=SimpleNamespace(),
             )
 
@@ -231,9 +244,17 @@ def test_taehv_variant_swaps_only_the_decoder() -> None:
         == 8
     )
     # Sampling and the attention window are inherited unchanged.
-    assert variant.diffusion_model.transformer.len_t == 3
-    assert variant.diffusion_model.transformer.window_size_t == 12
-    assert variant.diffusion_model.scheduler.num_inference_steps == 4
+    variant_transformer = cast(
+        Game14BTransformerConfig, variant.diffusion_model.transformer
+    )
+    assert variant_transformer.len_t == 3
+    assert variant_transformer.window_size_t == 12
+    assert (
+        cast(
+            EdenFlowMatchSchedulerConfig, variant.diffusion_model.scheduler
+        ).num_inference_steps
+        == 4
+    )
 
 
 def test_negative_prompt_is_the_14b_string() -> None:
@@ -287,7 +308,9 @@ def test_covers_differ_between_games(real_games_root) -> None:
     assert len(set(prompts.values())) == len(slugs)
 
 
-def test_explicit_image_and_prompt_override_the_registry(tmp_path, fake_games_root) -> None:
+def test_explicit_image_and_prompt_override_the_registry(
+    tmp_path, fake_games_root
+) -> None:
     image = tmp_path / "frame.png"
     image.write_bytes(b"not really a png, only the path is read here")
     conditioning = resolve_game14b_conditioning(

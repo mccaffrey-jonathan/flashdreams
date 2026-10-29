@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """CPU tests for the proxy-DINO conditioned AR 5B Game2V preset.
 
@@ -10,6 +12,7 @@ tensor shapes, so a drift in either is what these are meant to catch.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import torch
@@ -23,13 +26,27 @@ from eden.config import (
     PIPELINE_GAME2V_EDEN_WORLD_V2_5B,
     PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV,
 )
+from eden.impl.diffusion import EdenDiffusionModelConfig
 from eden.impl.game5b.network import (
     GAME5B_CONTROL_DIM,
     GAME5B_LATENT_CHANNELS,
     Game5BDiTNetworkConfig,
 )
+from eden.impl.game5b.transformer import Game5BTransformerConfig
+from eden.impl.scheduler import EdenFlowMatchSchedulerConfig
+from eden.impl.vae import EdenWan22TI2V5BVAEDecoderConfig
 
 pytestmark = pytest.mark.ci_cpu
+
+# Typed views of the 5B config (the dataclass fields are typed as the bases).
+_DIFFUSION = cast(
+    EdenDiffusionModelConfig, PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model
+)
+_TRANSFORMER = cast(Game5BTransformerConfig, _DIFFUSION.transformer)
+_SCHEDULER = cast(EdenFlowMatchSchedulerConfig, _DIFFUSION.scheduler)
+_DECODER = cast(
+    EdenWan22TI2V5BVAEDecoderConfig, PIPELINE_GAME2V_EDEN_WORLD_V2_5B.decoder
+)
 
 
 def test_channel_layout_matches_the_checkpoint_patch_embedding() -> None:
@@ -40,7 +57,7 @@ def test_channel_layout_matches_the_checkpoint_patch_embedding() -> None:
     Wan 2.2 TI2V seeds the first frame by stamping a clean latent, not by
     channel-concatenating a mask.
     """
-    network = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer.network
+    network = _TRANSFORMER.network
     assert GAME5B_LATENT_CHANNELS == 48
     assert GAME5B_CONTROL_DIM == 1024
     assert network.in_dim == GAME5B_LATENT_CHANNELS + GAME5B_CONTROL_DIM == 1072
@@ -67,7 +84,7 @@ def test_packed_first_frame_uses_the_ti2v_stamp() -> None:
     every forward and held at ``t=0`` by the per-token timestep, while the rest
     of the chunk denoises at the scheduler step.
     """
-    transformer = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer
+    transformer = _TRANSFORMER
     assert transformer.stamp_image_latent is True
     assert transformer.ti2v_first_frame_per_token_timestep is True
     assert transformer.first_frame_timestep_value == 0.0
@@ -78,8 +95,8 @@ def test_packed_first_frame_uses_the_ti2v_stamp() -> None:
 def test_sampling_matches_the_reference_schedule() -> None:
     """CFG off, 4 stochastic steps, and the reference's own timestep grid."""
     pipeline = PIPELINE_GAME2V_EDEN_WORLD_V2_5B
-    transformer = pipeline.diffusion_model.transformer
-    scheduler = pipeline.diffusion_model.scheduler
+    transformer = _TRANSFORMER
+    scheduler = _SCHEDULER
     # ``guidance_scale: 1.0`` upstream: one conditional KV stream.
     assert transformer.guidance_scale == 1.0
     # ``chunk_size: 3``.
@@ -90,9 +107,9 @@ def test_sampling_matches_the_reference_schedule() -> None:
     assert scheduler.denoising_timesteps == [1000, 750, 500, 250]
     assert scheduler.warp_denoising_step is True
     # ``context_noise_sigma: 0.0``: the AR cache commits the clean latent.
-    assert pipeline.diffusion_model.context_noise == 0
+    assert _DIFFUSION.context_noise == 0
     # One rank-0 noise draw over the whole chunk, broadcast to every shard.
-    assert pipeline.diffusion_model.noise_from_rank0 is True
+    assert _DIFFUSION.noise_from_rank0 is True
     # Cache-slot RoPE: K cached unrotated, rotated by its arena slot.
     assert transformer.network.apply_rope_before_kvcache is False
     # Timesteps reach the network in fp32 so bf16 does not round them.
@@ -106,7 +123,7 @@ def test_denoising_timesteps_reproduce_the_reference_timestep_list() -> None:
     instead indexes the warped sigma table at ``1000 - t``, so this check is what
     ties the two representations together.
     """
-    scheduler = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.scheduler
+    scheduler = _SCHEDULER
     n = scheduler.num_train_timesteps
     sigmas = torch.linspace(
         scheduler.sigma_max, scheduler.sigma_min, n + 1, dtype=torch.float32
@@ -125,7 +142,7 @@ def test_kv_budget_matches_the_reference_context_window() -> None:
     ``sink_latent_frames: 6`` carved out of it; FlashDreams sizes the arena as
     ``sink + window``, so the same budget is 6 + 12.
     """
-    transformer = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer
+    transformer = _TRANSFORMER
     assert transformer.sink_size_t == GAME2V_5B_SINK_SIZE_T == 6
     assert transformer.window_size_t == GAME2V_5B_WINDOW_SIZE_T == 12
     assert transformer.sink_size_t + transformer.window_size_t == 18
@@ -145,7 +162,7 @@ def test_frame_size_shards_across_eight_ranks() -> None:
     vae_ratio = 16
     patch = 2
     cp_size = 8
-    transformer = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer
+    transformer = _TRANSFORMER
 
     def tokens_per_frame(height: int, width: int) -> int:
         return (height // vae_ratio // patch) * (width // vae_ratio // patch)
@@ -173,7 +190,7 @@ def test_vae_is_the_wan22_ti2v_5b_autoencoder() -> None:
     """
     pipeline = PIPELINE_GAME2V_EDEN_WORLD_V2_5B
     encoder = pipeline.encoder.encoder
-    decoder = pipeline.decoder
+    decoder = _DECODER
     assert encoder.z_dim == decoder.z_dim == GAME5B_LATENT_CHANNELS
     assert encoder.patch_size == decoder.patch_size == 2
     assert encoder.is_residual is decoder.is_residual is True
@@ -210,7 +227,7 @@ def test_taehv_variant_swaps_only_the_decoder() -> None:
     assert TaehvVAEWan22Decoder.TEMPORAL_COMPRESSION_RATIO == 4
     assert TaehvVAEWan22Decoder.SPATIAL_COMPRESSION_RATIO == 16
     # The Wan 2.2 5B VAE it stands in for: 8x encoder body * 2x patchify.
-    assert WanVAE.SPATIAL_COMPRESSION_RATIO * base.decoder.patch_size == 16
+    assert WanVAE.SPATIAL_COMPRESSION_RATIO * _DECODER.patch_size == 16
     assert WanVAE.TEMPORAL_COMPRESSION_RATIO == 4
 
 
@@ -314,7 +331,7 @@ def test_checkpoint_points_at_the_published_ema_file() -> None:
     """
     from eden.impl.model_root import EDEN_MODEL_ROOT
 
-    transformer = PIPELINE_GAME2V_EDEN_WORLD_V2_5B.diffusion_model.transformer
+    transformer = _TRANSFORMER
     assert transformer.dcp_checkpoint_path == (
         f"{EDEN_MODEL_ROOT}/dit-5b/diffusion_pytorch_model.safetensors"
     )
@@ -384,7 +401,7 @@ def test_encoder_stamps_only_the_first_chunk() -> None:
 
     encoder = Game5BCtrlEncoder.__new__(Game5BCtrlEncoder)
     encoder.encoder = _VAEEncoder()
-    cache = Game5BCtrlEncoderCache(vae={})
+    cache = Game5BCtrlEncoderCache(vae=cast(Any, {}))
     control = torch.zeros(len_t, GAME5B_CONTROL_DIM, 2, 2)
 
     first = encoder.forward(
@@ -427,14 +444,14 @@ def test_encoder_requires_the_cover_at_ar_zero() -> None:
         encoder.forward(
             Game5BCtrlInput(image=None, control=control),
             autoregressive_index=0,
-            cache=Game5BCtrlEncoderCache(vae={}),
+            cache=Game5BCtrlEncoderCache(vae=cast(Any, {})),
         )
     # A rollout that never ran AR 0 has no latent to shape the zeros from.
     with pytest.raises(ValueError, match="before AR step 0"):
         encoder.forward(
             Game5BCtrlInput(image=None, control=control),
             autoregressive_index=2,
-            cache=Game5BCtrlEncoderCache(vae={}),
+            cache=Game5BCtrlEncoderCache(vae=cast(Any, {})),
         )
 
 
@@ -473,7 +490,9 @@ def _bare_pipeline(encoder_factory):
     pipeline = Game5BInferencePipeline.__new__(_Pipeline)
     torch.nn.Module.__init__(pipeline)
     pipeline.diffusion_model = SimpleNamespace(
-        config=SimpleNamespace(max_latent_frames=None), device=torch.device("cpu")
+        config=SimpleNamespace(max_latent_frames=None),
+        device=torch.device("cpu"),
+        transformer=SimpleNamespace(config=SimpleNamespace(guidance_scale=1.0)),
     )
     pipeline._text_cache = None
     pipeline._negative_text_cache = None
@@ -540,7 +559,7 @@ def test_control_stream_resamples_onto_the_5b_latent_grid() -> None:
     import eden.apps.game2v.game5b as game5b
 
     original = game5b.ProxyDinoControlStream
-    game5b.ProxyDinoControlStream = _Stream  # type: ignore[assignment]
+    setattr(game5b, "ProxyDinoControlStream", _Stream)
     try:
         make_game5b_control_stream(
             SimpleNamespace(

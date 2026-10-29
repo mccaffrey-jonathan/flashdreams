@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Streaming pipeline for the proxy-DINO AR 14B Game2V model.
 
@@ -33,17 +35,22 @@ from __future__ import annotations
 import gc
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import torch
 from loguru import logger
 from torch import Tensor
 
+from eden.impl.diffusion import EdenDiffusionModel
 from flashdreams.infra.encoder.image.clip import CLIPImageEncoderConfig
 from flashdreams.recipes.wan.pipeline import (
     WanInferencePipeline,
     WanInferencePipelineCache,
     WanInferencePipelineConfig,
+)
+from flashdreams.recipes.wan.transformer.wan21 import (
+    Wan21TransformerCache,
+    Wan21TransformerConfig,
 )
 
 from .encoder import Game14BCtrlEncoderConfig, Game14BCtrlInput
@@ -109,6 +116,11 @@ class Game14BInferencePipeline(WanInferencePipeline):
         """The 14B negative prompt (see :data:`GAME14B_NEGATIVE_PROMPT`)."""
         return GAME14B_NEGATIVE_PROMPT
 
+    @property
+    def _eden_diffusion_model(self) -> EdenDiffusionModel:
+        """The diffusion model, typed as the EdenLive subclass the configs build."""
+        return cast(EdenDiffusionModel, self.diffusion_model)
+
     @torch.no_grad()
     def initialize_cache(
         self,
@@ -133,10 +145,10 @@ class Game14BInferencePipeline(WanInferencePipeline):
         # Reuse before the base call: ``super().initialize_cache`` reloads the
         # released one-shot encoders and re-encodes unconditionally, which is
         # the restart stall this cache exists to avoid.
-        if self.diffusion_model.config.max_latent_frames is not None:
+        if self._eden_diffusion_model.config.max_latent_frames is not None:
             # A bounded replay is one deterministic video per rollout: rewind the
             # RNG so a restart with the same seed draws the same noise.
-            self.diffusion_model.reset_noise()
+            self._eden_diffusion_model.reset_noise()
         text_embeddings = self._cached_text_embeddings(text)
         image_embeddings = (
             self._cached_image_embeddings(image) if image is not None else None
@@ -242,7 +254,7 @@ class Game14BInferencePipeline(WanInferencePipeline):
 
         try:
             if isinstance(text_encoder, torch.nn.Module):
-                self.text_encoder = _Recording(
+                self.text_encoder = _Recording(  # ty: ignore[invalid-assignment]
                     text_encoder, self._record_text_embeddings
                 )
             if isinstance(image_encoder, torch.nn.Module):
@@ -255,7 +267,9 @@ class Game14BInferencePipeline(WanInferencePipeline):
                     if pending_image is not None:
                         self._image_cache = (pending_image, embeddings)
 
-                self.image_encoder = _Recording(image_encoder, _record_image)
+                self.image_encoder = _Recording(  # ty: ignore[invalid-assignment]
+                    image_encoder, _record_image
+                )
             return super().initialize_cache(
                 text,
                 image,
@@ -282,7 +296,7 @@ class Game14BInferencePipeline(WanInferencePipeline):
 
     def _initialize_cache_from_embeddings(
         self,
-        text_embeddings: Tensor,
+        text_embeddings: Tensor | None,
         image: Tensor | None,
         image_embeddings: Tensor | None,
         *,
@@ -309,7 +323,7 @@ class Game14BInferencePipeline(WanInferencePipeline):
                     "Game14BInferencePipeline requires a decoder to derive the "
                     "latent size from the anchor frame."
                 )
-            sp = self.decoder.spatial_compression_ratio
+            sp = int(cast(Any, self.decoder).spatial_compression_ratio)
             pixel_h, pixel_w = int(image.shape[-2]), int(image.shape[-1])
             if pixel_h % sp != 0 or pixel_w % sp != 0:
                 raise ValueError(
@@ -383,9 +397,12 @@ class Game14BInferencePipeline(WanInferencePipeline):
             Decoded video ``[*batch_shape, T, C, H, W]`` in ``[-1, 1]``.
         """
         assert cache.image is not None, "initialize_cache() must be called first"
-        maximum = self.diffusion_model.config.max_latent_frames
+        maximum = self._eden_diffusion_model.config.max_latent_frames
         if maximum is not None:
-            start = autoregressive_index * self.diffusion_model.transformer.config.len_t
+            len_t = cast(
+                Wan21TransformerConfig, self.diffusion_model.transformer.config
+            ).len_t
+            start = autoregressive_index * len_t
             input = input[..., : maximum - start, :, :, :]
 
         # The packed first frame is encoded at AR 0 only (the cover alone, no
@@ -432,8 +449,9 @@ class Game14BInferencePipeline(WanInferencePipeline):
         """
         transformer = self.diffusion_model.transformer
         network = getattr(transformer.network, "_orig_mod", transformer.network)
-        network.replace_text_embeddings(
-            cache.transformer_cache.network_cache, text_embeddings
+        cast(Any, network).replace_text_embeddings(
+            cast(Wan21TransformerCache, cache.transformer_cache).network_cache,
+            text_embeddings,
         )
 
 

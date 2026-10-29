@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Wan 2.1 14B DiT with the proxy-DINO channel-concat control head.
 
@@ -21,12 +23,14 @@ denoising step.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 from torch import Tensor, nn
 
 from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
 from eden.impl.numerics import EdenWanDiTNetwork
+from flashdreams.recipes.wan.transformer.impl.modules import Block
 from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetwork14BConfig,
     WanDiTNetworkCache,
@@ -93,7 +97,7 @@ class Game14BDiTNetwork(EdenWanDiTNetwork):
         )
         context_text = self.text_embedding(text_embeddings)
         for block, block_cache in zip(self.blocks, cache.block_caches):
-            fresh = block.cross_attn.compute_kv(context_text)
+            fresh = cast(Block, block).cross_attn.compute_kv(context_text)
             block_cache.cross_attn.text.overwrite_kv_(*fresh.clone_kv())
 
     def normalize_control_channels(self, control: Tensor) -> Tensor:
@@ -110,7 +114,8 @@ class Game14BDiTNetwork(EdenWanDiTNetwork):
             )
         # [..., T, C, H, W] -> [..., T, H, W, C] so C is the normalized dim.
         channel_last = control.movedim(-3, -1)
-        normalized = self.patch_embedding.condition_norm(channel_last.float())
+        condition_norm = cast(nn.RMSNorm, self.patch_embedding.condition_norm)
+        normalized = condition_norm(channel_last.float())
         return normalized.to(dtype=control.dtype).movedim(-1, -3)
 
 

@@ -93,6 +93,7 @@ class EdenDiffusionModel(DiffusionModel):
                 f"max_latent_frames={config.max_latent_frames} must be a multiple "
                 f"of len_t={len_t}; partial final chunks are not supported"
             )
+        self._len_t: int = int(len_t) if len_t is not None else 1
         self._initial_video_noise: Tensor | None = None
 
     def reset_noise(self) -> None:
@@ -166,7 +167,7 @@ class EdenDiffusionModel(DiffusionModel):
                 self._initial_video_noise = torch.randn(
                     shape, device=like.device, dtype=like.dtype, generator=self.rng
                 ).cpu()
-            start = autoregressive_index * self.transformer.config.len_t
+            start = autoregressive_index * self._len_t
             stop = start + full_shape[-4]
             if stop > self.config.max_latent_frames:
                 raise ValueError(

@@ -291,8 +291,7 @@ EdenLive weights      mixed        https://huggingface.co/VAST-AI/EdenLive
       flux-c2f/                                     FLUX Non-Commercial v2.1
         Used only by VAST's workbench first-frame renderer, which this
         integration does not port. Not needed; do not download it.
-EdenLive games        Apache-2.0 (with MIT GameBlocks modules and the MIT
-                      html-to-image bundle)
+EdenLive games        Apache-2.0 (with MIT GameBlocks modules)
     Not vendored. The Game2V app reads them from an EdenLive checkout
     (EDEN_GAMES_ROOT). three.js (MIT) is installed there by npm.
 playwright            Apache-2.0   https://github.com/microsoft/playwright-python
@@ -404,6 +403,22 @@ These seven files adapt SwiftVR's encoder, transformer, decoder and streaming
 pipeline to FlashDreams. Their upstream copyrights, Apache license identifiers
 and NVIDIA modification notices remain in the files. Model weights are
 obtained separately and are not included by this source attribution.
+
+--------------------------------------------------------------------------------
+EdenLive real-time integration (Game2V)
+--------------------------------------------------------------------------------
+
+Path:     integrations_v2/eden/
+License:  Apache-2.0 (see LICENSES/Apache-2.0.txt), Copyright (c) 2026 Vast AI
+Upstream: https://github.com/VAST-AI-Research/EdenLive/tree/0b78d211bfa87b6d9b6281e9e36e55b974fe7bec/realtime/integrations_v2/eden
+
+The game2v app, the 5B/14B proxy-DINO model code, configs and tests are
+ported from VAST's EdenLive real-time tree (itself built on a FlashDreams
+fork). The port moves the fork's in-place FlashDreams core changes into
+eden subclasses, drops the workbench and the LingBot-derived cam2v presets,
+and adapts the app to the v0.2.0 runtime. VAST copyright lines and NVIDIA
+modification notices remain in the files. Model weights and the proxy games
+are obtained separately and are not included by this source attribution.
 
 --------------------------------------------------------------------------------
 LingBot-World v1 camera helpers

@@ -116,7 +116,7 @@ def _sage_fp8_attention_fake(query: Tensor, key: Tensor, value: Tensor) -> Tenso
 
 @torch.library.custom_op("eden::sage2_attention", mutates_args=())
 def _sage2_attention(query: Tensor, key: Tensor, value: Tensor) -> Tensor:
-    from sageattention import sageattn
+    from sageattention import sageattn  # ty: ignore[unresolved-import]
 
     return sageattn(query, key, value, tensor_layout="NHD", is_causal=False)
 
@@ -135,7 +135,7 @@ class SingleGPUAttentionOp(nn.Module):
         self._op = _sage_fp8_attention if backend == "sage_fp8" else _sage2_attention
         if backend == "sage2":
             try:
-                import sageattention  # noqa: F401
+                import sageattention  # noqa: F401  # ty: ignore[unresolved-import]
             except ImportError as error:  # pragma: no cover - optional dependency
                 raise ImportError(
                     "self_attention_backend='sage2' needs the SageAttention 2 "
@@ -165,7 +165,8 @@ def replace_self_attention_ops(
     if backend == "cudnn":
         return
     for block in blocks:
-        block.self_attn.attn_op = SingleGPUAttentionOp(backend)
+        # ``attn_op`` is typed as the core attention op; this is a drop-in.
+        setattr(block.self_attn, "attn_op", SingleGPUAttentionOp(backend))
 
 
 __all__ = [

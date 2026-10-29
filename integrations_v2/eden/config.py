@@ -35,7 +35,7 @@ decoder is 8x over 16 channels and cannot read these latents.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from eden.impl.diffusion import EdenDiffusionModelConfig
 from eden.impl.game5b.encoder import Game5BCtrlEncoderConfig
@@ -46,6 +46,7 @@ from eden.impl.game14b.encoder import Game14BCtrlEncoderConfig
 from eden.impl.game14b.network import Game14BDiTNetworkConfig
 from eden.impl.game14b.pipeline import Game14BInferencePipelineConfig
 from eden.impl.game14b.transformer import Game14BTransformerConfig
+from eden.impl.image_encoder import EdenCLIPImageEncoderConfig
 from eden.impl.pipeline_yaml import (
     component_path,
     load_pipeline_yaml,
@@ -55,15 +56,14 @@ from eden.impl.pipeline_yaml import (
 from eden.impl.scheduler import EdenFlowMatchSchedulerConfig
 from eden.impl.taehv_wan22 import TaehvVAEWan22DecoderConfig
 from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
-from eden.impl.vae import EdenWan22TI2V5BVAEEncoderConfig
-from flashdreams.infra.config import derive_config
-from flashdreams.infra.encoder.image.clip import CLIPImageEncoderConfig
-from flashdreams.recipes.taehv import TaehvVAEDecoderConfig
-from flashdreams.recipes.wan.autoencoder.vae import (
-    Wan22TI2V5BVAEDecoderConfig,
-    WanVAEDecoderConfig,
-    WanVAEEncoderConfig,
+from eden.impl.vae import (
+    EdenWan22TI2V5BVAEDecoderConfig,
+    EdenWan22TI2V5BVAEEncoderConfig,
+    EdenWanVAEDecoderConfig,
+    EdenWanVAEEncoderConfig,
 )
+from flashdreams.infra.config import derive_config
+from flashdreams.recipes.taehv import TaehvVAEDecoderConfig
 
 # ---------------------------------------------------------------------------
 # 5B: Wan 2.2 TI2V-5B, proxy-DINO conditioned, AR
@@ -90,7 +90,7 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_5B = Game5BInferencePipelineConfig(
             checkpoint_path=component_path(GAME2V_5B_SPEC, "vae"),
         ),
     ),
-    decoder=Wan22TI2V5BVAEDecoderConfig(
+    decoder=EdenWan22TI2V5BVAEDecoderConfig(
         checkpoint_path=component_path(GAME2V_5B_SPEC, "vae"),
     ),
     # Wan 2.2 TI2V-5B has no CLIP vision tower; the first frame is conditioned
@@ -162,7 +162,10 @@ PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV_RTX5090 = derive_config(
     diffusion_model=dict(
         transformer=dict(
             network=derive_config(
-                PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV.diffusion_model.transformer.network,
+                cast(
+                    Game5BTransformerConfig,
+                    PIPELINE_GAME2V_EDEN_WORLD_V2_5B_TAEHV.diffusion_model.transformer,
+                ).network,
                 linear_backend="rowwise_fp8",
                 self_attention_backend="sage_fp8",
             ),
@@ -195,15 +198,16 @@ GAME2V_14B_FPS: int = GAME2V_14B_SPEC["fps"]
 PIPELINE_GAME2V_EDEN_WORLD_V2_14B = Game14BInferencePipelineConfig(
     name=GAME2V_14B_SPEC["name"],
     encoder=Game14BCtrlEncoderConfig(
-        encoder=WanVAEEncoderConfig(
+        encoder=EdenWanVAEEncoderConfig(
             checkpoint_path=component_path(GAME2V_14B_SPEC, "vae"),
         ),
     ),
-    decoder=WanVAEDecoderConfig(
+    decoder=EdenWanVAEDecoderConfig(
         checkpoint_path=component_path(GAME2V_14B_SPEC, "vae"),
     ),
-    image_encoder=CLIPImageEncoderConfig(
-        model_id_or_local_path=component_path(GAME2V_14B_SPEC, "image_encoder"),  # type: ignore[arg-type]
+    # uint8 cover preprocessing, as VAST's fork and offline package.
+    image_encoder=EdenCLIPImageEncoderConfig(
+        model_id_or_local_path=component_path(GAME2V_14B_SPEC, "image_encoder"),
     ),
     text_encoder=EdenUMT5TextEncoderConfig(
         model_id_or_local_path=component_path(GAME2V_14B_SPEC, "text_encoder"),

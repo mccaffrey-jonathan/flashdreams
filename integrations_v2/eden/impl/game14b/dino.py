@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Frozen proxy-DINO (DINOv3 ViT-L/16) control encoder.
 
@@ -28,6 +30,7 @@ import os
 import time
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -88,7 +91,7 @@ class ProxyDinoEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone = backbone
-        hidden_size = int(backbone.config.hidden_size)
+        hidden_size = int(cast(Any, backbone).config.hidden_size)
         self.global_projection = nn.Linear(hidden_size, int(projection_dim))
         # Native 16px patches: one token maps to one projected vector
         # (patch_projection is (1024, 1024)).
@@ -97,11 +100,11 @@ class ProxyDinoEncoder(nn.Module):
 
     @property
     def patch_size(self) -> int:
-        return int(self.backbone.config.patch_size)
+        return int(cast(Any, self.backbone).config.patch_size)
 
     @property
     def num_register_tokens(self) -> int:
-        return int(getattr(self.backbone.config, "num_register_tokens", 0))
+        return int(getattr(cast(Any, self.backbone).config, "num_register_tokens", 0))
 
     def _patch_grid(self, tokens: Tensor, image_shape: tuple[int, int]) -> Tensor:
         """Arrange ``[L, D]`` patch tokens into a ``[h, w, D]`` grid."""
@@ -271,7 +274,9 @@ class ProxyDinoControlEncoder:
                 "proxy-DINO checkpoint must be a state dict or contain a "
                 "'model' state dict"
             )
-        encoder_state = extract_shared_encoder_state_dict(state)
+        encoder_state = extract_shared_encoder_state_dict(
+            cast(dict[str, Tensor], state)
+        )
         # The training checkpoint may nest the HF backbone one level deeper
         # (``backbone.model.*``) than ``AutoModel`` exposes it.
         model_keys = set(encoder.state_dict())

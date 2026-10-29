@@ -40,12 +40,13 @@ def _bare_model(**config) -> EdenDiffusionModel:
     model.transformer = _PassThroughTransformer()
     model._rng = None
     model._initial_video_noise = None
+    model._len_t = 3
     return model
 
 
 def test_video_noise_draw_preserves_channels_first_rng_and_cpu_storage() -> None:
     model = _bare_model(max_latent_frames=9)
-    generator = torch.Generator().manual_seed(model.config.seed)
+    generator = torch.Generator().manual_seed(2026092901)
     expected = torch.randn(2, 9, 2, 2, generator=generator)  # (C, T, H, W)
     chunks = [
         model._video_initial_noise(torch.empty(3, 2, 2, 2), index) for index in range(3)
@@ -54,7 +55,9 @@ def test_video_noise_draw_preserves_channels_first_rng_and_cpu_storage() -> None
     assert torch.equal(torch.cat(chunks).movedim(-3, -4), expected)
     assert model._initial_video_noise is not None
     assert model._initial_video_noise.device.type == "cpu"
-    assert torch.equal(model.rng.get_state(), generator.get_state())
+    rng = model.rng
+    assert rng is not None
+    assert torch.equal(rng.get_state(), generator.get_state())
     # The re-noise continues the same stream, again channels-first.
     renoise = model._rank0_noise(torch.empty(3, 2, 2, 2))
     expected_renoise = torch.randn(2, 3, 2, 2, generator=generator).movedim(-3, -4)

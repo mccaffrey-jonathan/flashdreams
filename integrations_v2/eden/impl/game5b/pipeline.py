@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Streaming pipeline for the proxy-DINO 5B Game2V model.
 
@@ -33,16 +35,22 @@ from __future__ import annotations
 import gc
 import time
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import torch
 from loguru import logger
 from torch import Tensor
 
+from eden.impl.diffusion import EdenDiffusionModel
 from eden.impl.text_encoder import EdenUMT5TextEncoderConfig
 from flashdreams.recipes.wan.pipeline import (
     WanInferencePipeline,
     WanInferencePipelineCache,
     WanInferencePipelineConfig,
+)
+from flashdreams.recipes.wan.transformer.wan21 import (
+    Wan21TransformerCache,
+    Wan21TransformerConfig,
 )
 
 from .encoder import Game5BCtrlEncoderConfig, Game5BCtrlInput
@@ -110,6 +118,11 @@ class Game5BInferencePipeline(WanInferencePipeline):
         """The recipe's own CFG negative prompt."""
         return NEGATIVE_PROMPT
 
+    @property
+    def _eden_diffusion_model(self) -> EdenDiffusionModel:
+        """The diffusion model, typed as the EdenLive subclass the configs build."""
+        return cast(EdenDiffusionModel, self.diffusion_model)
+
     @torch.no_grad()
     def initialize_cache(
         self,
@@ -130,10 +143,10 @@ class Game5BInferencePipeline(WanInferencePipeline):
         The embeddings are cached against their prompt, so a restart with the
         same prompt neither reloads UMT5 nor re-encodes.
         """
-        if self.diffusion_model.config.max_latent_frames is not None:
+        if self._eden_diffusion_model.config.max_latent_frames is not None:
             # A bounded replay is one deterministic video per rollout: rewind the
             # RNG so a restart with the same seed draws the same noise.
-            self.diffusion_model.reset_noise()
+            self._eden_diffusion_model.reset_noise()
         text_embeddings = self._cached_text_embeddings(text)
         reusing = text_embeddings is not None
         cache_started = time.perf_counter()
@@ -144,6 +157,18 @@ class Game5BInferencePipeline(WanInferencePipeline):
             # the cross-attention cache is built on the DiT's device.
             text_embeddings = self.text_encoder(text).to(device=self.device)
             self._text_cache = (tuple(text), text_embeddings)
+            if (
+                cast(
+                    Wan21TransformerConfig, self.diffusion_model.transformer.config
+                ).guidance_scale
+                > 1.0
+                and self._negative_text_cache is None
+            ):
+                # Encode the constant CFG negative prompt in the same load
+                # window, so UMT5 is neither reloaded nor resident later.
+                self._negative_text_cache = self.text_encoder(
+                    [self._negative_prompt()]
+                ).to(device=self.device)
             if release_oneshot_encoders:
                 self.release_oneshot_encoders()
                 gc.collect()
@@ -198,7 +223,7 @@ class Game5BInferencePipeline(WanInferencePipeline):
                     "Game5BInferencePipeline requires a decoder to derive the "
                     "latent size from the anchor frame."
                 )
-            sp = self.decoder.spatial_compression_ratio
+            sp = int(cast(Any, self.decoder).spatial_compression_ratio)
             pixel_h, pixel_w = int(image.shape[-2]), int(image.shape[-1])
             if pixel_h % sp != 0 or pixel_w % sp != 0:
                 raise ValueError(
@@ -272,9 +297,12 @@ class Game5BInferencePipeline(WanInferencePipeline):
             Decoded video ``[*batch_shape, T, C, H, W]`` in ``[-1, 1]``.
         """
         assert cache.image is not None, "initialize_cache() must be called first"
-        maximum = self.diffusion_model.config.max_latent_frames
+        maximum = self._eden_diffusion_model.config.max_latent_frames
         if maximum is not None:
-            start = autoregressive_index * self.diffusion_model.transformer.config.len_t
+            len_t = cast(
+                Wan21TransformerConfig, self.diffusion_model.transformer.config
+            ).len_t
+            start = autoregressive_index * len_t
             input = input[..., : maximum - start, :, :, :]
 
         # The packed first frame is encoded at AR 0 and stamped from there on,
@@ -320,8 +348,9 @@ class Game5BInferencePipeline(WanInferencePipeline):
         """
         transformer = self.diffusion_model.transformer
         network = getattr(transformer.network, "_orig_mod", transformer.network)
-        network.replace_text_embeddings(
-            cache.transformer_cache.network_cache, text_embeddings
+        cast(Any, network).replace_text_embeddings(
+            cast(Wan21TransformerCache, cache.transformer_cache).network_cache,
+            text_embeddings,
         )
 
 

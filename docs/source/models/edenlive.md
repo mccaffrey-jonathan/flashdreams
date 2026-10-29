@@ -31,13 +31,15 @@ reference reaches a Wan 2.2 TI2V-5B (or Wan 2.1 I2V-14B) DiT through a post-trai
 ```bash
 uv sync --package flashdreams-eden --inexact
 hf download VAST-AI/EdenLive --local-dir models/EdenLive \
-  --include "dit-5b/*" "vae-5b/*" "decoder-5b/*" "scheduler-5b/*" "umt5/*" "vision-encoder/*"
+  --include "dit-5b/*" --include "vae-5b/*" --include "decoder-5b/*" \
+  --include "scheduler-5b/*" --include "umt5/*" --include "vision-encoder/*"
 export EDEN_MODEL_ROOT=$PWD/models/EdenLive HF_HUB_OFFLINE=1
 
 # Proxy games live in the EdenLive repository.
 git clone https://github.com/VAST-AI-Research/EdenLive && npm ci --prefix EdenLive/realtime/games
 export EDEN_GAMES_ROOT=$PWD/EdenLive/realtime/games
-uv pip install "flashdreams-eden[game]" && uv run python -m playwright install chromium
+uv sync --package flashdreams-eden --extra game --inexact
+uv run --no-sync python -m playwright install chromium
 
 uv run --no-sync flashdreams-run-v2 game2v-eden-world-v2-5b-taehv-rtx-5090 --mode native-window
 ```

@@ -53,7 +53,8 @@ VAST patched FlashDreams core in place; here every model-specific change is an
 `EdenFlowMatchScheduler` (fp32 network timesteps, bf16 sigma),
 `EdenDiffusionModel` (reference `(C, T, H, W)` noise layout, bounded whole-video
 noise), `TaehvVAEWan22Decoder` (48-channel LightTAE), `EdenWanVAEEncoder`
-(fp32 RMS norm), scalar-timestep KV commit. Not ported: the fork's switch of the
+(fp32 RMS norm; also the full-VAE decoders), `EdenCLIPImageEncoder` (14B: uint8
+cover preprocessing), scalar-timestep KV commit. Not ported: the fork's switch of the
 Wan attention backend to `flash` (PyTorch's Windows wheels ship without
 FlashAttention; the cuDNN backend stays), its fp64 RoPE kernel, fp32 sinusoidal
 time embedding and real-`Conv3d` patch embedding (small numerics-only changes
@@ -89,11 +90,13 @@ that were unconditional for every Wan model), the multi-GPU orchestration
 ```bash
 uv sync --package flashdreams-eden --inexact
 # Game2V live mode (headless Chromium for the proxy games):
-uv pip install "flashdreams-eden[game]" && uv run python -m playwright install chromium
+uv sync --package flashdreams-eden --extra game --inexact
+uv run --no-sync python -m playwright install chromium
 
 # 5B weights only (~37 GB), without the non-commercial FLUX tree:
 hf download VAST-AI/EdenLive --local-dir models/EdenLive \
-  --include "dit-5b/*" "vae-5b/*" "decoder-5b/*" "scheduler-5b/*" "umt5/*" "vision-encoder/*"
+  --include "dit-5b/*" --include "vae-5b/*" --include "decoder-5b/*" \
+  --include "scheduler-5b/*" --include "umt5/*" --include "vision-encoder/*"
 export EDEN_MODEL_ROOT=$PWD/models/EdenLive HF_HUB_OFFLINE=1
 ```
 

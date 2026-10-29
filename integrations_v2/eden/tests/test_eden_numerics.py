@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import copy
+from typing import cast
 
 import pytest
 import torch
 import torch.nn.functional as F
+from eden.impl.acceleration import SingleGPUAttentionOp
 from eden.impl.numerics import EdenWanDiTNetwork, FP32AdaLNBlock, FP32AdaLNHead
 from eden.impl.scheduler import EdenFlowMatchScheduler, EdenFlowMatchSchedulerConfig
 from torch import nn
@@ -41,9 +43,11 @@ def test_network_sees_exact_fractional_timesteps() -> None:
     scheduler = _scheduler()
     seen: list[torch.Tensor] = []
 
-    def predict_flow(noisy: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    def predict_flow(
+        noisy_latent: torch.Tensor, timestep: torch.Tensor
+    ) -> torch.Tensor:
         seen.append(timestep)
-        return torch.zeros_like(noisy)
+        return torch.zeros_like(noisy_latent)
 
     scheduler.sample(torch.zeros(2, 4, dtype=torch.bfloat16), predict_flow)
     assert [t.dtype for t in seen] == [torch.float32] * 4
@@ -68,15 +72,19 @@ def test_renoise_uses_noise_fn_and_bf16_sigma() -> None:
         calls.append(tuple(like.shape))
         return noise
 
+    def predict_flow(
+        noisy_latent: torch.Tensor, timestep: torch.Tensor
+    ) -> torch.Tensor:
+        del noisy_latent, timestep
+        return flow
+
     out = scheduler.sample(
-        torch.ones(3, dtype=torch.bfloat16),
-        lambda noisy, timestep: flow,
-        noise_fn=noise_fn,
+        torch.ones(3, dtype=torch.bfloat16), predict_flow, noise_fn=noise_fn
     )
     assert calls == [(3,)] * 3
     # Replay the loop by hand in bf16.
     noisy = torch.ones(3, dtype=torch.bfloat16)
-    clean = None
+    clean = torch.empty(0)
     for i, sigma in enumerate(scheduler.denoising_sigmas.tolist()):
         s = torch.tensor(sigma, dtype=torch.bfloat16)
         if i:
@@ -106,11 +114,12 @@ class _SDPA(nn.Module):
 def _tiny_block(dtype: torch.dtype) -> Block:
     torch.manual_seed(0)
     block = Block(dim=64, ffn_dim=128, num_heads=2, cross_attn_norm=True)
-    block.self_attn.attn_op = _SDPA()
-    block.cross_attn.attn_op = _SDPA()
+    # CPU stand-ins for the CUDA attention ops (typed as the core op).
+    setattr(block.self_attn, "attn_op", _SDPA())
+    setattr(block.cross_attn, "attn_op", _SDPA())
     with torch.no_grad():
         block.modulation.normal_(0, 0.5)
-        block.norm3.weight.normal_(1, 0.1)
+        cast(nn.LayerNorm, block.norm3).weight.normal_(1, 0.1)
     block.update_parameters_after_loading_checkpoint()
     return block.to(dtype)
 
@@ -182,9 +191,8 @@ def test_default_flags_build_the_stock_network() -> None:
     network = _tiny_network()
     assert all(type(block) is Block for block in network.blocks)
     assert type(network.head) is Head
-    assert (
-        type(network.blocks[0].self_attn.attn_op).__name__ == "ContextParallelAttention"
-    )
+    block = cast(Block, network.blocks[0])
+    assert type(block.self_attn.attn_op).__name__ == "ContextParallelAttention"
 
 
 def test_fp32_adaln_flag_reclasses_blocks_and_head_only() -> None:
@@ -198,8 +206,9 @@ def test_fp32_adaln_flag_reclasses_blocks_and_head_only() -> None:
 
 def test_sage_fp8_flag_swaps_only_the_self_attention_op() -> None:
     network = _tiny_network(self_attention_backend="sage_fp8")
-    block = network.blocks[0]
-    assert type(block.self_attn.attn_op).__name__ == "SingleGPUAttentionOp"
+    block = cast(Block, network.blocks[0])
+    op = cast(SingleGPUAttentionOp, block.self_attn.attn_op)
+    assert type(op) is SingleGPUAttentionOp
     assert type(block.cross_attn.attn_op).__name__ == "ContextParallelAttention"
     with pytest.raises(NotImplementedError):
-        block.self_attn.attn_op.set_context_parallel_group(object())
+        op.set_context_parallel_group(object())

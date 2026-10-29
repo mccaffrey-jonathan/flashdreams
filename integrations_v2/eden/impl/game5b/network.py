@@ -1,5 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# This file has been modified by NVIDIA CORPORATION & AFFILIATES.
 
 """Wan 2.2 TI2V-5B DiT widened for the proxy-DINO channel-concat control.
 
@@ -31,11 +33,13 @@ hook, so the subclass here exists to add it and nothing else.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from torch import Tensor
 
 from eden.impl.acceleration import LinearBackend, SelfAttentionBackend
 from eden.impl.numerics import EdenWanDiTNetwork
+from flashdreams.recipes.wan.transformer.impl.modules import Block
 from flashdreams.recipes.wan.transformer.impl.network import (
     WanDiTNetworkCache,
     WanDiTNetworkTI2V5BConfig,
@@ -85,7 +89,7 @@ class Game5BDiTNetwork(EdenWanDiTNetwork):
         )
         context_text = self.text_embedding(text_embeddings)
         for block, block_cache in zip(self.blocks, cache.block_caches):
-            fresh = block.cross_attn.compute_kv(context_text)
+            fresh = cast(Block, block).cross_attn.compute_kv(context_text)
             block_cache.cross_attn.text.overwrite_kv_(*fresh.clone_kv())
 
 
