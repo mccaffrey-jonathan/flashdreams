@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Vast AI
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flashdreams-eden"
+version = "0.2.0"
+description = "EdenLive (VAST) proxy-DINO real-time generative rendering integration and Game2V app for FlashDreams v2."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flashdreams[serving]",
+    "flashdreams-cam2v",
+    "av>=14",
+    "safetensors",
+    "transformers",
+]
+
+[tool.uv.sources]
+flashdreams = { workspace = true }
+flashdreams-cam2v = { workspace = true }
+
+[project.optional-dependencies]
+# Headless Chromium that runs the three.js proxy games (Game2V live mode).
+# `python -m playwright install chromium` downloads the browser itself.
+game = [
+    "playwright>=1.50",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.entry-points."flashdreams.applications_v2"]
+"game2v-eden-world-v2-5b-taehv" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv"
+"game2v-eden-world-v2-5b-taehv-rtx-5090" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv_rtx5090"
+"game2v-eden-world-v2-14b-taehv" = "eden.apps.game2v.adapter:create_app_v2_14b_taehv"
+
+[project.entry-points."flashdreams.client_windows_v2"]
+# Game2V's browser page: the game render, HUD overlay and prompt/event panels.
+# Selected by Game2VApplication.resolve_client_window_mode("webrtc").
+"eden-webrtc" = "eden.apps.game2v.browser:EdenWebRTCMode"
+
+[tool.setuptools.package-data]
+eden = ["configs/*.yaml", "apps/game2v/static/*.js"]
+
+[tool.setuptools]
+packages = [
+    "eden",
+    "eden.apps",
+    "eden.apps.game2v",
+    "eden.impl",
+    "eden.impl.game14b",
+    "eden.impl.game5b",
+]
+
+[tool.setuptools.package-dir]
+eden = "."
+
+[tool.uv]
+managed = true

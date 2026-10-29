@@ -1,0 +1,109 @@
+# Game2V realtime pipeline — Wan 2.2 TI2V-5B, proxy-DINO conditioned, AR.
+#
+# Loaded by eden.game5b_config into Game5BInferencePipelineConfig. The app
+# entry point "game2v-eden-world-v2-5b-taehv" serves the `taehv` variant below;
+# the base pipeline is the same model with the full Wan VAE decoder.
+#
+# Resolution is pinned, not preferred: the DiT's per-frame token count is
+# (height/16/2) * (width/16/2), and the KV window and sink token counts must
+# divide by the context-parallel size. 704x1280 gives 880 tokens per latent
+# frame, which 8 ranks shard evenly; 480x832 gives 390 and fails that assert.
+#
+name: game2v-eden-world-v2-5b
+
+# Directory holding the published weight tree (dit-5b/, vae-5b/, umt5/,
+# decoder-5b/, vision-encoder/, ...). Every relative path under `components`
+# resolves against it; an absolute path or a URL there is used as written.
+#
+# `null` takes the directory from the EDEN_MODEL_ROOT environment variable,
+# which is what launch.sh sets. Point this at a local tree to pin it here
+# instead.
+model_root: null
+
+# Latent frames per AR chunk. At the VAE's 4x temporal ratio this is 9 decoded
+# frames on the first chunk and 12 after, which is what the renderer paces its
+# capture against.
+len_t: 3
+# The reference's 18-frame attention budget with 6 frames carved out as a fixed
+# sink. The arena is sized as sink + window, so the rolling part is 12.
+window_size_t: 12
+sink_size_t: 6
+
+# Frame size and rate the renderer captures at. Must stay in step with len_t:
+# the model consumes one proxy frame per decoded frame.
+pixel_height: 704
+pixel_width: 1280
+fps: 24
+
+# CFG off: one conditional KV stream, the proxy control encoded once per chunk.
+guidance_scale: 1.0
+seed: 2026092901
+# Set to the recording latent length for bounded replay; initial noise is CPU-offloaded.
+max_latent_frames: null
+# The AR cache commits the clean latent, so the cache-update forward runs at t=0.
+context_noise: 0
+
+# Draw every noise tensor once, on rank 0, over the whole unpatchified chunk and
+# broadcast it, so each context-parallel shard gets a disjoint slice of one
+# sample. The default draws per rank from one shared seed, which repeats the
+# same noise in every shard. Needs context_noise: 0, which is what we have.
+noise_from_rank0: true
+
+# Cache-slot RoPE: K is cached unrotated and rotated on read by its slot in the
+# attention arena, Q by the slots its chunk is written to. While the arena fills
+# the slots equal global frame positions; once full, the sink stays at 0-5 and
+# the current chunk sits at the tail of the arena for every later step, instead
+# of global positions that keep growing past anything the model saw in training.
+apply_rope_before_kvcache: false
+
+# AdaLN modulation, LayerNorms and the self-attn / FFN residual adds run in
+# fp32, as Diffusers' WanTransformerBlock does.
+fp32_adaln: true
+
+# Wan 2.2 TI2V seeds the first frame by stamping a clean latent inside the first
+# denoising chunk and holding those tokens at t=0, not by concatenating a mask.
+stamp_image_latent: true
+ti2v_first_frame_per_token_timestep: true
+concat_image_mask_to_latent: false
+compile_network: true
+
+# 4-step distilled grid. Indexed into the shift-5 warped sigma table these give
+# the reference's timesteps [1000, 937.5, 833.3333, 625], so they stay fp32:
+# 937.5 would quantize to 937 if stored as int64.
+scheduler:
+  num_inference_steps: 4
+  denoising_timesteps: [1000, 750, 500, 250]
+  warp_denoising_step: true
+  shift: 5.0
+  sigma_max: 1.0
+  sigma_min: 0.0
+  extra_one_step: true
+  num_train_timesteps: 1000
+  timestep_dtype: float32
+  # Timesteps reach the network in fp32. The default casts them to the bf16
+  # latent dtype, which rounds 937.5/833.3/625 to 936/832/624 while the x0
+  # conversion keeps the exact fp32 sigma.
+  network_timestep_dtype: float32
+
+components:
+  # Distilled DiT, single safetensors, Diffusers keys.
+  transformer: dit-5b/diffusion_pytorch_model.safetensors
+  # Wan 2.2 TI2V-5B VAE, shared by the encoder and the full decoder. Native
+  # single-file checkpoint, so it loads with no key remap.
+  vae: vae-5b/Wan2.2_VAE.pth
+  # UMT5 text encoder; the directory holds text_encoder/ and tokenizer/ side by
+  # side, which is the layout both from_pretrained calls read.
+  text_encoder: umt5
+  # DINOv3 backbone (model.safetensors + config.json) and the finetuned
+  # projection that maps its patch tokens onto the DiT's control channels.
+  vision_encoder: vision-encoder/backbone
+  vision_projection: vision-encoder/projection.safetensors
+
+# Same model and schedule with the Wan VAE decoder swapped for the lighttaew2_2
+# tiny decoder. Its ratios (temporal 4, spatial 16) and 48 latent channels match
+# the 5B VAE, so frame counts and capture pacing do not change; the encoder stays
+# the real VAE because the stamped condition latent has to live in the space the
+# DiT was trained on.
+taehv:
+  name: game2v-eden-world-v2-5b-taehv
+  decoder: decoder-5b/lighttaew2_2.pth

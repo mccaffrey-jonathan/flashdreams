@@ -270,6 +270,37 @@ multidict              Apache-2.0   https://github.com/aio-libs/multidict
 opencv-python-headless Apache-2.0   https://github.com/opencv/opencv-python
 
 ================================================================================
+Optional integration: integrations_v2/eden
+================================================================================
+
+EdenLive source       Apache-2.0   https://github.com/VAST-AI-Research/EdenLive
+    Copyright (c) 2026 Vast AI. integrations_v2/eden is ported from
+    realtime/integrations_v2/eden at commit 0b78d21 (itself built on a fork
+    of FlashDreams); files carry both copyright lines.
+EdenLive weights      mixed        https://huggingface.co/VAST-AI/EdenLive
+    Downloaded separately, never redistributed here. Per the model card and
+    the per-directory LICENSE/NOTICE files:
+      dit-*, vae-*, umt5/, scheduler-*, decoder-*   Apache-2.0
+      clip/ (14B only)                              MIT (LAION CLIP ViT-H/14)
+      vision-encoder/ (required)                    DINOv3 License (Meta)
+        https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md
+        Royalty-free and commercial use allowed, but not an OSI license:
+        trade-control and prohibited-use terms, no reverse engineering,
+        pass-through on redistribution, and publications must acknowledge
+        DINOv3.
+      flux-c2f/                                     FLUX Non-Commercial v2.1
+        Used only by VAST's workbench first-frame renderer, which this
+        integration does not port. Not needed; do not download it.
+EdenLive games        Apache-2.0 (with MIT GameBlocks modules)
+    Not vendored. The Game2V app reads them from an EdenLive checkout
+    (EDEN_GAMES_ROOT). three.js (MIT) is installed there by npm.
+playwright            Apache-2.0   https://github.com/microsoft/playwright-python
+    Optional ``game`` extra; ``python -m playwright install chromium``
+    downloads Chromium (BSD-3-Clause and bundled third-party licenses).
+av (PyAV)             BSD-3-Clause https://github.com/PyAV-Org/PyAV
+    Wheels bundle FFmpeg libraries (LGPL/GPL builds).
+
+================================================================================
 Optional integration: integrations_v2/sana_wm
 ================================================================================
 
@@ -372,6 +403,34 @@ These seven files adapt SwiftVR's encoder, transformer, decoder and streaming
 pipeline to FlashDreams. Their upstream copyrights, Apache license identifiers
 and NVIDIA modification notices remain in the files. Model weights are
 obtained separately and are not included by this source attribution.
+
+--------------------------------------------------------------------------------
+EdenLive real-time integration (Game2V)
+--------------------------------------------------------------------------------
+
+Path:     integrations_v2/eden/
+License:  Apache-2.0 (see LICENSES/Apache-2.0.txt), Copyright (c) 2026 Vast AI
+Upstream: https://github.com/VAST-AI-Research/EdenLive/tree/0b78d211bfa87b6d9b6281e9e36e55b974fe7bec/realtime/integrations_v2/eden
+
+The game2v app, the 5B/14B proxy-DINO model code, configs and tests are
+ported from VAST's EdenLive real-time tree (itself built on a FlashDreams
+fork). The port moves the fork's in-place FlashDreams core changes into
+eden subclasses, drops the workbench and the LingBot-derived cam2v presets,
+and adapts the app to the v0.2.0 runtime. VAST copyright lines and NVIDIA
+modification notices remain in the files. Model weights and the proxy games
+are obtained separately and are not included by this source attribution.
+
+--------------------------------------------------------------------------------
+LightX2V EdenLive recording reader
+--------------------------------------------------------------------------------
+
+Path:     integrations_v2/eden/apps/game2v/recording.py
+License:  Apache-2.0 (see LICENSES/Apache-2.0.txt)
+Upstream: https://github.com/ModelTC/LightX2V/blob/d2d7424219abdc01b5722e7768e584bc96a5b418/lightx2v/models/input_encoders/edenlive/recording.py
+
+The recorded-proxy frame selection (midpoint rule, 4n+1 length, centre-crop
+and bilinear resize) is adapted so a Game2V replay consumes the same pixels
+as the LightX2V EdenLive runner used by the ComfyUI reference.
 
 --------------------------------------------------------------------------------
 LingBot-World v1 camera helpers

@@ -1,0 +1,103 @@
+# Game2V realtime pipeline — Wan 2.1 I2V-14B, proxy-DINO conditioned, AR.
+#
+# Loaded by eden.game14b_config into Game14BInferencePipelineConfig. The app
+# entry point "game2v-eden-world-v2-14b-taehv" serves the `taehv` variant below;
+# the base pipeline is the same model with the full Wan VAE decoder.
+#
+# 4-step distilled AR rollout: chunk 3 at 480x832, a shift-3 schedule whose
+# warped table yields timesteps [1000, 900, 750, 500], CFG off, and an 18-frame
+# attention budget with 6 frames carved out as a fixed sink.
+#
+name: game2v-eden-world-v2-14b
+
+# Directory holding the published weight tree (dit-14b/, vae-14b/, umt5/,
+# clip/, vision-encoder/, ...). Every relative path under `components`
+# resolves against it; an absolute path or a URL there is used as written.
+#
+# `null` takes the directory from the EDEN_MODEL_ROOT environment variable,
+# which is what launch.sh sets. Point this at a local tree to pin it here
+# instead.
+model_root: null
+
+# Latent frames per AR chunk. At the VAE's 4x temporal ratio this is 9 decoded
+# frames on the first chunk and 12 after, which is what the renderer paces its
+# capture against.
+len_t: 3
+# 18-frame attention budget with 6 frames carved out as a fixed sink, so the
+# rolling part is 12. The arena is sized as sink + window.
+window_size_t: 12
+sink_size_t: 6
+
+# Frame size and rate the renderer captures at. The model itself reads no time,
+# so the rate paces captures and stamps videos; 16 matches the reference 14B.
+pixel_height: 480
+pixel_width: 832
+fps: 16
+
+# CFG off: one conditional KV stream, the proxy control encoded once per chunk.
+guidance_scale: 1.0
+seed: 2026092901
+# Set to the recording latent length for bounded replay; initial noise is CPU-offloaded.
+max_latent_frames: null
+# The AR cache commits the clean latent, so the cache-update forward runs at t=0.
+context_noise: 0
+
+# One rank-0 noise draw over the whole chunk, broadcast to every shard. See the
+# 5B config; needs context_noise: 0.
+noise_from_rank0: true
+
+# Cache-slot RoPE, same as the 5B: K cached unrotated and rotated by its slot in
+# the arena rather than by absolute frame index.
+apply_rope_before_kvcache: false
+
+# AdaLN modulation, LayerNorms and the self-attn / FFN residual adds run in
+# fp32, as Diffusers' WanTransformerBlock and norm_out do.
+fp32_adaln: true
+
+# Wan 2.1 I2V composes both paths: the cover's latent is stamped into the first
+# denoising chunk and held at t=0 per token, and a 4-channel mask plus the
+# first-frame latent are channel-concatenated next to the noisy latent.
+stamp_image_latent: true
+ti2v_first_frame_per_token_timestep: true
+concat_image_mask_to_latent: true
+compile_network: true
+
+# 4-step distilled grid indexed into the shift-3 warped sigma table, which
+# yields timesteps [1000, 900, 750, 500]. sigma_max 1.0 matches the table the
+# model was trained against.
+scheduler:
+  num_inference_steps: 4
+  denoising_timesteps: [1000, 750, 500, 250]
+  warp_denoising_step: true
+  shift: 3.0
+  sigma_max: 1.0
+  sigma_min: 0.0
+  extra_one_step: true
+  num_train_timesteps: 1000
+  timestep_dtype: float32
+  # Reference FSDP2 casts floating forward inputs to BF16 (750 becomes 752).
+  # null uses the latent BF16 dtype; scheduler buffers remain FP32.
+  network_timestep_dtype: null
+
+components:
+  # Distilled DiT, single safetensors, Diffusers keys.
+  transformer: dit-14b/diffusion_pytorch_model.safetensors
+  # Wan 2.1 VAE, shared by the encoder and the full decoder.
+  vae: vae-14b/Wan2.1_VAE.pth
+  # UMT5 text encoder; the directory holds text_encoder/ and tokenizer/.
+  text_encoder: umt5
+  # Wan 2.1 I2V CLIP vision tower; the directory holds image_encoder/ and
+  # image_processor/ side by side.
+  image_encoder: clip
+  # DINOv3 backbone (model.safetensors + config.json) and the finetuned
+  # projection that maps its patch tokens onto the DiT's control channels.
+  vision_encoder: vision-encoder/backbone
+  vision_projection: vision-encoder/projection.safetensors
+
+# Same model and schedule with the Wan VAE decoder swapped for the LightTAE tiny
+# decoder. Its ratios (temporal 4, spatial 8) and 16 latent channels match the
+# Wan 2.1 VAE, so frame counts and capture pacing do not change. Staged in the
+# local tree like the 5B's decoder (lightx2v/Autoencoders lighttaew2_1.pth).
+taehv:
+  name: game2v-eden-world-v2-14b-taehv
+  decoder: decoder-14b/lighttaew2_1.pth

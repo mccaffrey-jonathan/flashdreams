@@ -8,6 +8,7 @@ nav:
       - Causal-Forcing: causal_forcing.md
       - Causal Wan 2.2: causal_wan22.md
       - LingBot-World: lingbot_world.md
+      - EdenLive: edenlive.md
       - Waypoint 1.5: waypoint.md
       - SANA-WM: sana_wm_streaming.md
   - Bidirectional:

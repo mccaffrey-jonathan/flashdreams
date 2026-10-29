@@ -50,6 +50,16 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved."
 SPDX-License-Identifier = "Apache-2.0"
 
+# --- EdenLive integration: ported from VAST EdenLive (Apache-2.0) ---
+[[annotations]]
+path = "integrations_v2/eden/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+    "Copyright (c) 2026 Vast AI",
+    "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+]
+SPDX-License-Identifier = "Apache-2.0"
+
 # --- Files originating from the NVIDIA Cosmos-Drive-Dreams project
 #     (https://github.com/nv-tlabs/Cosmos-Drive-Dreams), redistributed and
 #     modified under the same Apache-2.0 license. ---

@@ -26,8 +26,9 @@ in THIRD-PARTY-NOTICES:
         retains MIT terms, Copyright (c) 2022 Katherine Crowson.
         Its NOTICE and full Apache/MIT texts accompany the codec source
         as NOTICE, LICENSE.vllm-omni and LICENSE.k-diffusion.
-Modified Cosmos-Drive-Dreams camera helpers and SwiftVR adaptations retain
-their Apache-2.0 terms and upstream copyrights.
+Modified Cosmos-Drive-Dreams camera helpers, SwiftVR adaptations and the
+EdenLive integration (integrations_v2/eden, Copyright (c) 2026 Vast AI)
+retain their Apache-2.0 terms and upstream copyrights.
 
 Cosmos Interactive's TAEHV-super decoder retains MIT portions from
 Ollin Boer Bohan (2025), with Apache-2.0 NVIDIA modifications. The LiDAR
