@@ -51,7 +51,7 @@ def test_capture_renders_model_sized_frames_and_the_autopilot_plays(
     print(f"{slug}: WebGL renderer {worker.webgl_renderer!r}")
     assert not any(
         mark in worker.webgl_renderer for mark in _SOFTWARE_RENDERER_MARKS
-    ), f"{slug} rendered on {worker.webgl_renderer}; expected the GPU"
+    ), f"{slug} rendered on {worker.webgl_renderer}; expected WARP or the GPU"
     frames = [frame for chunk in chunks for frame in chunk.frames]
     assert len(frames) == 9 + 7 * 12
     assert all(frame.ui_frame.shape == (704, 1280, 3) for frame in frames)

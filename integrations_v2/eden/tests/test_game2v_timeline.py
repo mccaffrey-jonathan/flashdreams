@@ -325,6 +325,16 @@ def test_pace_duration_uses_last_generate_then_default():
     assert _pace_duration_s(state, 1) == pytest.approx(0.4)
 
 
+def test_file_renders_do_not_pace_the_game():
+    """No live input in an MP4 run: a slow generate must not stretch the next render."""
+    from flashdreams.runtime_v2.session_desc import PresentationMode, SessionDesc
+
+    state = Game2VModelState.__new__(Game2VModelState)
+    state.last_generate_wall_s = 1.37
+    state.session_desc = SessionDesc(presentation_mode=PresentationMode.ON_DEMAND)
+    assert _pace_duration_s(state, 1) == 0.0
+
+
 def _stub_capture(chunk) -> list[dict]:
     """Mimic the capture page: an image and HUD snapshot on every model frame."""
     return [
@@ -502,6 +512,7 @@ def test_gpu_launch_options_register_nvidia_egl_and_keep_mesa_fallback(
     monkeypatch, tmp_path
 ):
     monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.delenv("EDEN_GAME_RASTER", raising=False)
     monkeypatch.setattr(game_renderer.sys, "platform", "linux")
     mesa = tmp_path / "50_mesa.json"
     mesa.write_text("{}")
@@ -525,6 +536,7 @@ def test_gpu_launch_options_register_nvidia_egl_and_keep_mesa_fallback(
 
 def test_gpu_launch_options_omit_mesa_when_absent(monkeypatch, tmp_path):
     monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.delenv("EDEN_GAME_RASTER", raising=False)
     monkeypatch.setattr(game_renderer.sys, "platform", "linux")
     monkeypatch.setattr(game_renderer, "_MESA_EGL_VENDOR", tmp_path / "missing.json")
     holder = _GpuOptions()
@@ -537,18 +549,40 @@ def test_gpu_launch_options_omit_mesa_when_absent(monkeypatch, tmp_path):
         holder.cleanup()
 
 
-def test_gpu_launch_options_use_angle_d3d11_on_windows(monkeypatch):
-    """Windows has no EGL: no vendor JSON, no GLVND environment, D3D11 ANGLE."""
+@pytest.mark.parametrize(
+    "raster, flag",
+    [
+        # WARP by default: the D3D11 readback otherwise waits on the GPU the
+        # model saturates, which capped the live loop at ~11 fps on a 5090.
+        (None, "--use-angle=d3d11-warp"),
+        ("warp", "--use-angle=d3d11-warp"),
+        ("gpu", "--use-angle=d3d11"),
+        ("swiftshader", "--use-angle=swiftshader"),
+    ],
+)
+def test_gpu_launch_options_on_windows(monkeypatch, raster, flag):
+    """Windows has no EGL: no vendor JSON, no GLVND environment, ANGLE D3D11."""
     monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    if raster is None:
+        monkeypatch.delenv("EDEN_GAME_RASTER", raising=False)
+    else:
+        monkeypatch.setenv("EDEN_GAME_RASTER", raster)
     monkeypatch.setattr(game_renderer.sys, "platform", "win32")
     holder = _GpuOptions()
     try:
-        options = holder.options()
-        assert options == {"args": list(game_renderer._WINDOWS_GPU_LAUNCH_ARGS)}
-        assert "--use-angle=d3d11" in options["args"]
+        assert flag in holder.options()["args"]
         assert holder._vendor_dir is None
     finally:
         holder.cleanup()
+
+
+@pytest.mark.parametrize("platform, raster", [("win32", "metal"), ("linux", "warp")])
+def test_gpu_launch_options_reject_an_unusable_raster(monkeypatch, platform, raster):
+    monkeypatch.delenv("EDEN_GAME_GPU", raising=False)
+    monkeypatch.setenv("EDEN_GAME_RASTER", raster)
+    monkeypatch.setattr(game_renderer.sys, "platform", platform)
+    with pytest.raises(ValueError, match="EDEN_GAME_RASTER"):
+        _GpuOptions().options()
 
 
 def test_gpu_launch_options_disabled_by_env(monkeypatch):

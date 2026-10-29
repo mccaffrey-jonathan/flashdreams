@@ -1336,8 +1336,16 @@ def _opening_prompt(state: Game2VModelState, fallback: str) -> str:
 
 
 def _pace_duration_s(state: Game2VModelState, step_index: int) -> float:
-    """Stretch the in-flight chunk to the last generate, else a generate-like default."""
+    """Stretch the in-flight chunk to the last generate, else a generate-like default.
+
+    Pacing exists so live keys land in the chunk being simulated. A file render
+    (``ON_DEMAND``) has no live input, so it renders as fast as it can: a slow
+    generate would otherwise stretch the next render just as long and the step
+    after it would wait on the render.
+    """
     del step_index
+    if state.session_desc.presentation_mode is PresentationMode.ON_DEMAND:
+        return 0.0
     if state.last_generate_wall_s is not None and state.last_generate_wall_s > 0:
         return float(state.last_generate_wall_s)
     return _DEFAULT_RENDER_PACE_S

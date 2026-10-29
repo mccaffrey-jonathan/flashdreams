@@ -114,11 +114,23 @@ for frame with a replay of it.
   `on_demand` the UI only steps when a frame is presented.
 * The model loop returns two channels: the generated video and the proxy render
   of the same frames. The UI loop presents channel 0 (or both, side by side).
-* GPU rasterization: Windows launches Chromium with `--use-angle=d3d11`; Linux
-  registers NVIDIA's EGL library with GLVND (`--use-angle=gl-egl`). If the page
-  gets no WebGL it falls back to SwiftShader. `EDEN_GAME_GPU=0` forces
-  SwiftShader. The chosen renderer is logged, e.g.
-  `Game2V capture WebGL renderer: ANGLE (NVIDIA, NVIDIA GeForce RTX 5090 ... D3D11)`.
+* Rasterization (`EDEN_GAME_RASTER`): on Windows the default is `warp`
+  (`--use-angle=d3d11-warp`, Windows' multi-threaded CPU rasterizer). With the game
+  on the same GPU as the model (`gpu`, `--use-angle=d3d11`), the canvas readback
+  waits for GPU time slices the DiT holds (up to ~2 s a frame), which capped the
+  rtx-5090 preset's live loop at ~11 fps; WARP runs it at ~17 fps with frames
+  within ~52 dB of the GPU render. Linux defaults to `gpu` (NVIDIA's EGL library
+  registered with GLVND, `--use-angle=gl-egl`). `swiftshader` (or
+  `EDEN_GAME_GPU=0`) is Chromium's slower CPU fallback, also used when the page
+  gets no WebGL. The chosen renderer is logged, e.g.
+  `Game2V capture WebGL renderer: ANGLE (Microsoft, Microsoft Basic Render Driver ... D3D11)`.
+* Pacing: in interactive modes the next chunk's render is stretched over the last
+  generate so live keys land in it; `--mode mp4` has no live input and renders
+  ahead as fast as it can (WARP plus no pacing: ~19 fps on the rtx-5090 preset,
+  the model's own rate).
+* `--capture-size WxH` renders the game smaller and upscales it to the model size.
+  It cuts browser work but not the GPU-contention stalls (832x464 on the GPU:
+  ~11 fps, like full size).
 * mp4 mode presents on demand, so a win/lose card never pauses the rollout; after
   the round ends the game holds its end state. Size `--total-blocks` to the play.
 

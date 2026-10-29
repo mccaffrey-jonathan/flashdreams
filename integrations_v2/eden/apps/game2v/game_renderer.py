@@ -60,6 +60,18 @@ _WINDOWS_GPU_LAUNCH_ARGS = (
     "--ignore-gpu-blocklist",
     "--use-angle=d3d11",
 )
+# WARP, Windows' multi-threaded CPU rasterizer behind the same D3D11 backend.
+# Measured on an RTX 5090 with the rtx-5090 preset: the D3D11 readback in
+# toDataURL waits for GPU time slices the DiT holds (up to ~2 s a frame), so
+# the live loop ran at ~11 fps; on WARP it runs at ~17 fps, frames within
+# ~52 dB of the GPU render, and the DiT gets the whole GPU.
+_WINDOWS_WARP_LAUNCH_ARGS = (
+    "--enable-gpu",
+    "--ignore-gpu-blocklist",
+    "--use-angle=d3d11-warp",
+)
+RASTER_ENV = "EDEN_GAME_RASTER"
+"""Where the game rasterizes: ``gpu``, ``warp`` (Windows) or ``swiftshader``."""
 # Recent Chromium no longer falls back to SwiftShader for WebGL on its own.
 _SOFTWARE_LAUNCH_ARGS = ("--use-angle=swiftshader", "--enable-unsafe-swiftshader")
 
@@ -290,15 +302,34 @@ class GameRenderer:
         return browser
 
     def _gpu_launch_options(self) -> dict:
-        """Chromium flags that put WebGL on the GPU.
+        """Chromium flags for the WebGL rasterizer ``EDEN_GAME_RASTER`` selects.
 
-        Windows uses ANGLE's D3D11 backend. Linux registers NVIDIA's EGL library
-        with GLVND. Set ``EDEN_GAME_GPU=0`` to use SwiftShader instead.
+        ``gpu``: Linux registers NVIDIA's EGL library with GLVND; Windows uses
+        ANGLE's D3D11 backend. ``warp`` (the Windows default): the same backend on
+        Windows' CPU rasterizer, so the game does not compete with the model for
+        the GPU. ``swiftshader``: Chromium's CPU fallback (``EDEN_GAME_GPU=0`` too).
+
+        Raises:
+            ValueError: An unknown ``EDEN_GAME_RASTER``, or ``warp`` off Windows.
         """
-        if os.environ.get("EDEN_GAME_GPU", "1") != "1":
+        raster = os.environ.get(RASTER_ENV, "").strip().lower() or (
+            "warp" if sys.platform == "win32" else "gpu"
+        )
+        if raster not in ("gpu", "warp", "swiftshader"):
+            raise ValueError(
+                f"{RASTER_ENV} must be gpu, warp or swiftshader, got {raster!r}."
+            )
+        if os.environ.get("EDEN_GAME_GPU", "1") != "1" or raster == "swiftshader":
             return {"args": list(_SOFTWARE_LAUNCH_ARGS)}
         if sys.platform == "win32":
-            return {"args": list(_WINDOWS_GPU_LAUNCH_ARGS)}
+            launch_args = (
+                _WINDOWS_WARP_LAUNCH_ARGS
+                if raster == "warp"
+                else _WINDOWS_GPU_LAUNCH_ARGS
+            )
+            return {"args": list(launch_args)}
+        if raster == "warp":
+            raise ValueError(f"{RASTER_ENV}=warp is Windows-only.")
         self._vendor_dir = tempfile.TemporaryDirectory(prefix="eden-egl-vendor-")
         vendor = Path(self._vendor_dir.name) / "10_nvidia.json"
         vendor.write_text(json.dumps(_NVIDIA_EGL_VENDOR))
