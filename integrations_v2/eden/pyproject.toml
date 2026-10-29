@@ -13,7 +13,7 @@ description = "EdenLive (VAST) proxy-DINO real-time generative rendering integra
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "flashdreams",
+    "flashdreams[serving]",
     "flashdreams-cam2v",
     "av>=14",
     "safetensors",
@@ -39,6 +39,11 @@ dev = [
 "game2v-eden-world-v2-5b-taehv" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv"
 "game2v-eden-world-v2-5b-taehv-rtx-5090" = "eden.apps.game2v.adapter:create_app_v2_5b_taehv_rtx5090"
 "game2v-eden-world-v2-14b-taehv" = "eden.apps.game2v.adapter:create_app_v2_14b_taehv"
+
+[project.entry-points."flashdreams.client_windows_v2"]
+# Game2V's browser page: the game render, HUD overlay and prompt/event panels.
+# Selected by Game2VApplication.resolve_client_window_mode("webrtc").
+"eden-webrtc" = "eden.apps.game2v.browser:EdenWebRTCMode"
 
 [tool.setuptools.package-data]
 eden = ["configs/*.yaml", "apps/game2v/static/*.js"]

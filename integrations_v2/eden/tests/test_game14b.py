@@ -256,23 +256,28 @@ def test_negative_prompt_is_the_14b_string() -> None:
     assert negative != EDEN_WORLD_V2_NEGATIVE_PROMPT
 
 
-@pytest.mark.parametrize("slug", registered_game_slugs())
-def test_first_frame_comes_from_each_games_own_cover(slug: str) -> None:
-    """Every game conditions on its own cover, not one shared image."""
-    cover = game_cover_path(slug)
-    assert cover.is_file()
-    assert cover.parent.name == slug
+def test_first_frame_comes_from_each_games_own_cover(real_games_root) -> None:
+    """Every game conditions on its own cover, not one shared image.
 
-    conditioning = resolve_game14b_conditioning(
-        {"game": slug, "pixel_width": 832, "pixel_height": 480}
-    )
-    assert conditioning.first_frame_path == cover
-    # The prompt defaults to the registry's static scene description.
-    assert conditioning.prompt
-    assert len(conditioning.prompt) > 40
+    Needs the real EdenLive games (``EDEN_GAMES_ROOT``); skipped otherwise.
+    """
+    slugs = registered_game_slugs()
+    assert slugs
+    for slug in slugs:
+        cover = game_cover_path(slug)
+        assert cover.is_file()
+        assert cover.parent.name == slug
+
+        conditioning = resolve_game14b_conditioning(
+            {"game": slug, "pixel_width": 832, "pixel_height": 480}
+        )
+        assert conditioning.first_frame_path == cover
+        # The prompt defaults to the registry's static scene description.
+        assert conditioning.prompt
+        assert len(conditioning.prompt) > 40
 
 
-def test_covers_differ_between_games() -> None:
+def test_covers_differ_between_games(real_games_root) -> None:
     slugs = registered_game_slugs()
     assert {"ember-den", "jade-duel"} <= set(slugs)
     assert len({game_cover_path(slug) for slug in slugs}) == len(slugs)
@@ -282,7 +287,7 @@ def test_covers_differ_between_games() -> None:
     assert len(set(prompts.values())) == len(slugs)
 
 
-def test_explicit_image_and_prompt_override_the_registry(tmp_path) -> None:
+def test_explicit_image_and_prompt_override_the_registry(tmp_path, fake_games_root) -> None:
     image = tmp_path / "frame.png"
     image.write_bytes(b"not really a png, only the path is read here")
     conditioning = resolve_game14b_conditioning(
@@ -292,7 +297,7 @@ def test_explicit_image_and_prompt_override_the_registry(tmp_path) -> None:
     assert conditioning.prompt == "a custom prompt"
 
 
-def test_unregistered_game_is_rejected() -> None:
+def test_unregistered_game_is_rejected(fake_games_root) -> None:
     with pytest.raises(ValueError, match="Unregistered game"):
         resolve_game14b_conditioning({"game": "no-such-game"})
 
